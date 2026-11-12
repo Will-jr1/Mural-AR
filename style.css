@@ -18,6 +18,31 @@
   touch-action: manipulation;
 }
 
+/* Força o elemento de vídeo gerado pelo MindAR a ocupar 100% da tela no fundo */
+body > video {
+  position: fixed !important.compatibility;
+  position: fixed !important;
+  top: 50% !important;
+  left: 50% !important;
+  transform: translate(-50%, -50%) !important;
+  min-width: 100vw !important;
+  min-height: 100vh !important;
+  width: auto !important;
+  height: auto !important;
+  object-fit: cover !important;
+  z-index: 0 !important;
+}
+
+/* Garante que o canvas do A-Frame seja transparente e fique acima do vídeo */
+a-scene {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100vw !important;
+  height: 100dvh !important;
+  z-index: 1 !important;
+  background-color: transparent !important;
+}
+
 html, body {
   width: 100vw;
   height: 100dvh;
