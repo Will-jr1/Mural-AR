@@ -79,13 +79,13 @@
     filterBeta: 0.001 (Suaviza transições rápidas de movimento)
     missTolerance: 5 (Mantém a projeção ativa por 5 frames caso a lata passe na frente)
   -->
-  <a-scene
-    mindar-image="imageTargetSrc: ./assets/targets.mind; filterMinCF: 0.0001; filterBeta: 0.001; warmupTolerance: 5; missTolerance: 5; uiScanning: no; uiLoading: no;"
-    color-space="sRGB"
-    renderer="colorManagement: true, physicallyCorrectLights: false, alpha: true, antialias: true"
-    vr-mode-ui="enabled: false"
-    device-orientation-permission-ui="enabled: false"
-  >
+<a-scene
+  mindar-image="imageTargetSrc: ./assets/targets.mind; filterMinCF: 0.0001; filterBeta: 0.001; warmupTolerance: 5; missTolerance: 5; uiScanning: no; uiLoading: no;"
+  color-space="sRGB"
+  renderer="colorManagement: true, physicallyCorrectLights: false, alpha: true, antialias: true"
+  vr-mode-ui="enabled: false"
+  device-orientation-permission-ui="enabled: false"
+>
     <!-- Preload das Texturas PNG -->
     <a-assets timeout="10000">
       <img id="tex-wireframe" src="./assets/layer-wireframe.png" crossorigin="anonymous" />
