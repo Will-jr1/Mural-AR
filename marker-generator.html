@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MindAR High-Contrast Marker Generator</title>
+  <style>
+    body {
+      background: #111115;
+      color: #f0f0f5;
+      font-family: system-ui, -apple-system, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 24px;
+      gap: 16px;
+      margin: 0;
+    }
+    .controls {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    button {
+      background: #00ff66;
+      color: #000;
+      border: none;
+      padding: 12px 20px;
+      border-radius: 8px;
+      font-weight: 800;
+      font-size: 0.9rem;
+      cursor: pointer;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    button.secondary {
+      background: #252530;
+      color: #fff;
+      border: 1px solid #444;
+    }
+    canvas {
+      width: min(85vw, 520px);
+      height: min(85vw, 520px);
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+    }
+    p {
+      max-width: 520px;
+      text-align: center;
+      color: #9a9aa6;
+      font-size: 0.85rem;
+      line-height: 1.4;
+      margin: 0;
+    }
+  </style>
+</head>
+<body>
+
+  <h2>Gerador de Marcador Físico (MindAR)</h2>
+  <p>Projetado com margem branca de isolamento, 3 âncoras assimétricas de orientação e alta densidade de vértices multiescala.</p>
+
+  <div class="controls">
+    <button class="secondary" id="btn-regenerate">Gerar Nova Geometria</button>
+    <button id="btn-download">Baixar PNG (2048x2048)</button>
+  </div>
+
+  <canvas id="marker-canvas" width="2048" height="2048"></canvas>
+
+  <script>
+    const canvas = document.getElementById('marker-canvas');
+    const ctx = canvas.getContext('2d');
+    const SIZE = canvas.width;
+    const MARGIN = Math.floor(SIZE * 0.08); // 8% de margem branca obrigatória
+
+    function rand(min, max) {
+      return Math.random() * (max - min) + min;
+    }
+
+    function drawFiducialCorner(x, y, boxSize, type) {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(0, 0, boxSize, boxSize);
+
+      ctx.fillStyle = '#FFFFFF';
+      const inner = boxSize * 0.18;
+      ctx.fillRect(inner, inner, boxSize - inner * 2, boxSize - inner * 2);
+
+      ctx.fillStyle = '#000000';
+      const core = boxSize * 0.34;
+      if (type === 'square') {
+        ctx.fillRect(core, core, boxSize - core * 2, boxSize - core * 2);
+      } else if (type === 'triangle') {
+        ctx.beginPath();
+        ctx.moveTo(boxSize / 2, core);
+        ctx.lineTo(boxSize - core, boxSize - core);
+        ctx.lineTo(core, boxSize - core);
+        ctx.closePath();
+        ctx.fill();
+      } else if (type === 'L') {
+        ctx.fillRect(core, core, boxSize - core * 2, (boxSize - core * 2) * 0.45);
+        ctx.fillRect(core, core, (boxSize - core * 2) * 0.45, boxSize - core * 2);
+      }
+      ctx.restore();
+    }
+
+    function drawSharpPolygon(cx, cy, radius, sides, color) {
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(rand(0, Math.PI * 2));
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      for (let i = 0; i < sides; i++) {
+        const angle = (i / sides) * Math.PI * 2;
+        const r = radius * rand(0.45, 1.0);
+        const px = Math.cos(angle) * r;
+        const py = Math.sin(angle) * r;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function drawCrosshair(cx, cy, size, color) {
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(rand(0, Math.PI));
+      ctx.fillStyle = color;
+      const thickness = size * 0.24;
+      ctx.fillRect(-size / 2, -thickness / 2, size, thickness);
+      ctx.fillRect(-thickness / 2, -size / 2, thickness, size);
+      ctx.restore();
+    }
+
+    function generateMarker() {
+      // 1. Fundo Branco Puro (Quiet Zone inclusa)
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(0, 0, SIZE, SIZE);
+
+      const innerStart = MARGIN;
+      const innerSize = SIZE - MARGIN * 2;
+
+      // 2. Moldura Assimétrica Dentada (Gera centenas de feature points no perímetro)
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 16;
+      ctx.strokeRect(innerStart, innerStart, innerSize, innerSize);
+
+      const notchCount = 28;
+      const step = innerSize / notchCount;
+      ctx.fillStyle = '#000000';
+      for (let i = 0; i < notchCount; i++) {
+        if (i % 2 === 0) {
+          ctx.fillRect(innerStart + i * step, innerStart, step * 0.7, 28);
+          ctx.fillRect(innerStart + i * step, innerStart + innerSize - 28, step * 0.5, 28);
+          ctx.fillRect(innerStart, innerStart + i * step, 28, step * 0.6);
+          ctx.fillRect(innerStart + innerSize - 28, innerStart + i * step, 28, step * 0.8);
+        }
+      }
+
+      // 3. Camadas de Geometria Multiescala (Macro, Médio e Micro)
+      // Escala Macro (rastreamento de longe: 2 a 4 metros)
+      for (let i = 0; i < 45; i++) {
+        const x = rand(innerStart + 120, innerStart + innerSize - 120);
+        const y = rand(innerStart + 120, innerStart + innerSize - 120);
+        const color = i % 5 === 0 ? '#FFFFFF' : '#000000';
+        drawSharpPolygon(x, y, rand(70, 150), Math.floor(rand(3, 6)), color);
+      }
+
+      // Escala Média (rastreamento intermediário: 1 a 2 metros)
+      for (let i = 0; i < 140; i++) {
+        const x = rand(innerStart + 80, innerStart + innerSize - 80);
+        const y = rand(innerStart + 80, innerStart + innerSize - 80);
+        const color = i % 3 === 0 ? '#FFFFFF' : '#000000';
+        if (i % 2 === 0) {
+          drawSharpPolygon(x, y, rand(25, 65), 3, color);
+        } else {
+          drawCrosshair(x, y, rand(30, 70), color);
+        }
+      }
+
+      // Escala Micro (estabilização fina anti-jitter de perto)
+      for (let i = 0; i < 260; i++) {
+        const x = rand(innerStart + 60, innerStart + innerSize - 60);
+        const y = rand(innerStart + 60, innerStart + innerSize - 60);
+        ctx.fillStyle = i % 2 === 0 ? '#000000' : '#FFFFFF';
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(rand(0, Math.PI));
+        const s = rand(10, 24);
+        ctx.fillRect(-s / 2, -s / 2, s, s);
+        ctx.restore();
+      }
+
+      // 4. Três Âncoras Fiduciais nos Cantos (Impede inversão de orientação)
+      const fidSize = Math.floor(innerSize * 0.22);
+      const pad = 44;
+      // Canto Superior Esquerdo: Quadrado
+      drawFiducialCorner(innerStart + pad, innerStart + pad, fidSize, 'square');
+      // Canto Superior Direito: Triângulo
+      drawFiducialCorner(innerStart + innerSize - fidSize - pad, innerStart + pad, fidSize, 'triangle');
+      // Canto Inferior Esquerdo: Formato L
+      drawFiducialCorner(innerStart + pad, innerStart + innerSize - fidSize - pad, fidSize, 'L');
+      // Canto Inferior Direito: Barra Direcional Indicadora de Base ("THIS SIDE DOWN")
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(
+        innerStart + innerSize - fidSize - pad,
+        innerStart + innerSize - pad - 48,
+        fidSize,
+        48
+      );
+    }
+
+    document.getElementById('btn-regenerate').addEventListener('click', generateMarker);
+    document.getElementById('btn-download').addEventListener('click', () => {
+      const link = document.createElement('a');
+      link.download = 'marker-target-mindar.png';
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    });
+
+    generateMarker();
+  </script>
+</body>
+</html>
