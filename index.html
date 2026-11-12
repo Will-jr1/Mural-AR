@@ -3,25 +3,34 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-  <title>WebAR Mural Guide</title>
-
-  <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
-
+  <title>WebAR Mural Guide — Markerless</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
 
+  <!-- 1. FEED DA CÂMERA AO VIVO NO FUNDO -->
+  <video id="camera-feed" autoplay playsinline muted></video>
+
+  <!-- 2. PALCO DE PROJEÇÃO DA ARTE (3 CAMADAS EMPILHADAS) -->
+  <main id="projection-stage">
+    <div id="mural-rig">
+      <img id="layer-wireframe" class="mural-layer" src="./assets/layer-wireframe.png" alt="Layer 1 Esqueleto" />
+      <img id="layer-fill" class="mural-layer" src="./assets/layer-fill.png" alt="Layer 2 Preenchimento" />
+      <img id="layer-details" class="mural-layer" src="./assets/layer-details.png" alt="Layer 3 Detalhes" />
+    </div>
+  </main>
+
+  <!-- 3. HUD DE CONTROLE -->
   <div id="hud-container">
     <header class="hud-top">
       <div class="top-bar-row">
-        <div id="tracking-badge" class="status-badge status-searching">
+        <div id="tracking-badge" class="status-badge status-unlocked">
           <span class="status-dot"></span>
-          <span id="tracking-text">Procurando alvo...</span>
+          <span id="tracking-text">Modo Ajuste Livre</span>
         </div>
 
         <div class="top-right-tools">
-          <button id="btn-toggle-dpad" class="hud-btn tool-toggle-btn">XY</button>
+          <button id="btn-toggle-dpad" class="hud-btn tool-toggle-btn">XY / ROT</button>
           <div class="scale-controls">
             <button id="btn-scale-down" class="hud-btn icon-btn">−</button>
             <span id="scale-display" class="scale-readout">100%</span>
@@ -30,20 +39,24 @@
         </div>
       </div>
 
-      <!-- Gaveta D-Pad -->
+      <!-- Gaveta D-Pad + Rotação -->
       <div id="dpad-panel" class="dpad-drawer hidden">
         <div class="dpad-info">
-          <span class="dpad-title">OFFSET DO MURAL</span>
-          <code id="coords-display" class="coords-readout">X: 0.00 | Y: 0.00</code>
-          <button id="btn-pos-reset" class="hud-btn reset-btn">RESETAR PADRÃO</button>
+          <span class="dpad-title">POSIÇÃO & ROTAÇÃO</span>
+          <code id="coords-display" class="coords-readout">X: 0 | Y: 0 | 0°</code>
+          <div class="rot-buttons">
+            <button id="btn-rot-left" class="hud-btn reset-btn">↺ -1°</button>
+            <button id="btn-rot-right" class="hud-btn reset-btn">↻ +1°</button>
+          </div>
+          <button id="btn-pos-reset" class="hud-btn reset-btn">CENTRALIZAR</button>
         </div>
 
         <div class="dpad-grid">
-          <button class="hud-btn dpad-btn up" data-dx="0" data-dy="0.05">▲</button>
-          <button class="hud-btn dpad-btn left" data-dx="-0.05" data-dy="0">◀</button>
+          <button class="hud-btn dpad-btn up" data-dx="0" data-dy="-5">▲</button>
+          <button class="hud-btn dpad-btn left" data-dx="-5" data-dy="0">◀</button>
           <div class="dpad-center-dot"></div>
-          <button class="hud-btn dpad-btn right" data-dx="0.05" data-dy="0">▶</button>
-          <button class="hud-btn dpad-btn down" data-dx="0" data-dy="-0.05">▼</button>
+          <button class="hud-btn dpad-btn right" data-dx="5" data-dy="0">▶</button>
+          <button class="hud-btn dpad-btn down" data-dx="0" data-dy="5">▼</button>
         </div>
       </div>
     </header>
@@ -51,7 +64,7 @@
     <footer class="hud-bottom">
       <div class="quick-actions">
         <button id="btn-freeze" class="hud-btn freeze-btn">
-          MODO LIVRE / FREEZE
+          TRAVAR NA TELA (LOCK)
         </button>
         <button id="btn-peek" class="hud-btn peek-btn">
           SEGURE P/ OCULTAR (PEEK)
@@ -79,55 +92,6 @@
       </div>
     </footer>
   </div>
-
-  <a-scene
-    mindar-image="imageTargetSrc: ./assets/targets.mind; filterMinCF: 0.0001; filterBeta: 0.001; warmupTolerance: 5; missTolerance: 5; uiScanning: no; uiLoading: no;"
-    color-space="sRGB"
-    renderer="colorManagement: true, physicallyCorrectLights: false, alpha: true, antialias: true"
-    vr-mode-ui="enabled: false"
-    device-orientation-permission-ui="enabled: false"
-  >
-    <a-assets timeout="10000">
-      <img id="tex-wireframe" src="./assets/layer-wireframe.png" crossorigin="anonymous" />
-      <img id="tex-fill" src="./assets/layer-fill.png" crossorigin="anonymous" />
-      <img id="tex-details" src="./assets/layer-details.png" crossorigin="anonymous" />
-    </a-assets>
-
-    <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
-
-    <!-- Âncora do Marcador MindAR -->
-    <a-entity id="marker-anchor" mindar-image-target="targetIndex: 0">
-      <!-- Começa em 0 0 0 (bem em cima do marcador) para facilitar achar de primeira -->
-      <a-entity id="mural-rig" position="0 0 0" scale="1.5 1.5 1">
-        <a-plane
-          id="layer-wireframe"
-          position="0 0 0.001"
-          width="1.6"
-          height="1.0"
-          material="src: #tex-wireframe; transparent: true; opacity: 0.85; alphaTest: 0.01; shader: flat; depthWrite: false"
-        ></a-plane>
-
-        <a-plane
-          id="layer-fill"
-          position="0 0 0.002"
-          width="1.6"
-          height="1.0"
-          material="src: #tex-fill; transparent: true; opacity: 0.85; alphaTest: 0.01; shader: flat; depthWrite: false"
-        ></a-plane>
-
-        <a-plane
-          id="layer-details"
-          position="0 0 0.003"
-          width="1.6"
-          height="1.0"
-          material="src: #tex-details; transparent: true; opacity: 0.85; alphaTest: 0.01; shader: flat; depthWrite: false"
-        ></a-plane>
-      </a-entity>
-    </a-entity>
-
-    <!-- Âncora Livre / Freeze (Permite ver a arte mesmo sem apontar pro marcador) -->
-    <a-entity id="world-lock-anchor" position="0 0 -2.2" visible="false"></a-entity>
-  </a-scene>
 
   <script type="module" src="app.js"></script>
 </body>

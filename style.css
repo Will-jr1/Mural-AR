@@ -1,7 +1,8 @@
 :root {
-  --bg-glass: rgba(14, 14, 18, 0.78);
+  --bg-glass: rgba(14, 14, 18, 0.8);
   --border-glass: rgba(255, 255, 255, 0.16);
   --neon-accent: #00ff66;
+  --lock-accent: #00e5ff;
   --warn-accent: #ffcc00;
   --peek-accent: #ff0055;
   --text-main: #f4f4f6;
@@ -14,8 +15,7 @@
   padding: 0;
   user-select: none;
   -webkit-user-select: none;
-  -webkit-touch-callout: none;
-  touch-action: manipulation;
+  touch-action: none;
 }
 
 html, body {
@@ -23,24 +23,58 @@ html, body {
   height: 100dvh;
   overflow: hidden;
   background-color: #000;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: system-ui, -apple-system, sans-serif;
   color: var(--text-main);
 }
 
-/* Garante que o vídeo da câmera e o canvas fiquem no fundo */
-a-scene {
-  position: fixed !important;
-  inset: 0 !important;
-  width: 100vw !important;
-  height: 100dvh !important;
-  z-index: 1;
+/* Câmera traseira ao vivo */
+#camera-feed {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100dvh;
+  object-fit: cover;
+  z-index: 0;
 }
 
-/* Container principal do HUD (pass-through nos espaços vazios) */
+/* Palco das camadas PNG */
+#projection-stage {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100dvh;
+  display: grid;
+  place-items: center;
+  z-index: 1;
+  overflow: hidden;
+}
+
+#mural-rig {
+  position: relative;
+  width: 88vw;
+  max-width: 700px;
+  aspect-ratio: 16 / 10;
+  transform-origin: center center;
+  will-change: transform, opacity;
+  cursor: grab;
+}
+
+.mural-layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  opacity: 0.85;
+  transition: opacity 0.08s linear;
+}
+
+/* HUD */
 #hud-container {
   position: fixed;
   inset: 0;
-  z-index: 999;
+  z-index: 10;
   pointer-events: none;
   display: flex;
   flex-direction: column;
@@ -48,19 +82,31 @@ a-scene {
   padding: env(safe-area-inset-top, 16px) 16px env(safe-area-inset-bottom, 20px) 16px;
 }
 
-/* Barras interativas reativam eventos de toque */
-.hud-top,
-.hud-bottom {
+.hud-top, .hud-bottom {
   pointer-events: auto;
+  max-width: 520px;
+  width: 100%;
+  margin: 0 auto;
 }
 
-/* TOPO: Status + Escala */
 .hud-top {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 8px;
+}
+
+.top-bar-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 12px;
-  padding-top: 8px;
+  gap: 8px;
+}
+
+.top-right-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .status-badge {
@@ -71,11 +117,9 @@ a-scene {
   border-radius: 999px;
   background: var(--bg-glass);
   backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
   border: 1px solid var(--border-glass);
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   font-weight: 700;
-  letter-spacing: 0.03em;
   text-transform: uppercase;
 }
 
@@ -85,41 +129,19 @@ a-scene {
   border-radius: 50%;
 }
 
-.status-searching .status-dot {
-  background-color: var(--warn-accent);
-  box-shadow: 0 0 8px var(--warn-accent);
-  animation: pulse 1.2s infinite ease-in-out;
-}
+.status-unlocked { color: var(--warn-accent); }
+.status-unlocked .status-dot { background: var(--warn-accent); box-shadow: 0 0 8px var(--warn-accent); }
 
-.status-searching {
-  color: var(--warn-accent);
-}
+.status-locked { color: var(--lock-accent); border-color: rgba(0, 229, 255, 0.45); }
+.status-locked .status-dot { background: var(--lock-accent); box-shadow: 0 0 10px var(--lock-accent); }
 
-.status-locked .status-dot {
-  background-color: var(--neon-accent);
-  box-shadow: 0 0 10px var(--neon-accent);
-}
-
-.status-locked {
-  color: var(--neon-accent);
-  border-color: rgba(0, 255, 102, 0.4);
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.35; transform: scale(0.85); }
-}
-
-/* Controles de Escala */
 .scale-controls {
   display: flex;
   align-items: center;
   background: var(--bg-glass);
   backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
   border: 1px solid var(--border-glass);
   border-radius: 12px;
-  overflow: hidden;
 }
 
 .scale-readout {
@@ -127,90 +149,153 @@ a-scene {
   font-weight: 700;
   min-width: 48px;
   text-align: center;
-  font-variant-numeric: tabular-nums;
 }
 
 .icon-btn {
-  width: 42px;
-  height: 42px;
-  font-size: 1.3rem;
+  width: 40px;
+  height: 40px;
+  font-size: 1.25rem;
   font-weight: 700;
   background: transparent;
   border: none;
   color: var(--text-main);
+}
+
+.tool-toggle-btn {
+  height: 40px;
+  padding: 0 12px;
+  background: var(--bg-glass);
+}
+
+.tool-toggle-btn.active {
+  border-color: var(--neon-accent);
+  color: var(--neon-accent);
+}
+
+.dpad-drawer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  background: var(--bg-glass);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--border-glass);
+  border-radius: 18px;
+  padding: 12px 16px;
+}
+
+.dpad-drawer.hidden { display: none; }
+
+.dpad-info {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dpad-title {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.coords-readout {
+  font-family: monospace;
+  font-size: 0.82rem;
+  color: var(--neon-accent);
+  background: rgba(0, 0, 0, 0.45);
+  padding: 5px 8px;
+  border-radius: 6px;
+}
+
+.rot-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.reset-btn {
+  padding: 6px 10px;
+  font-size: 0.72rem;
+}
+
+.dpad-grid {
   display: grid;
-  place-items: center;
+  grid-template-columns: repeat(3, 42px);
+  grid-template-rows: repeat(3, 42px);
+  gap: 4px;
+  align-items: center;
+  justify-items: center;
 }
 
-.icon-btn:active {
-  background: rgba(255, 255, 255, 0.15);
-}
+.dpad-btn { width: 42px; height: 42px; }
+.dpad-btn.up    { grid-column: 2; grid-row: 1; }
+.dpad-btn.left  { grid-column: 1; grid-row: 2; }
+.dpad-center-dot { grid-column: 2; grid-row: 2; width: 6px; height: 6px; border-radius: 50%; background: var(--border-glass); }
+.dpad-btn.right { grid-column: 3; grid-row: 2; }
+.dpad-btn.down  { grid-column: 2; grid-row: 3; }
 
-/* BASE: Painel Ergonômico */
 .hud-bottom {
   background: var(--bg-glass);
   backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--border-glass);
   border-radius: 20px;
   padding: 14px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  max-width: 520px;
-  width: 100%;
-  margin: 0 auto;
+  gap: 12px;
 }
 
 .hud-btn {
   cursor: pointer;
   border-radius: 12px;
   border: 1px solid var(--border-glass);
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.07);
   color: var(--text-main);
   font-weight: 700;
-  font-size: 0.82rem;
-  transition: transform 0.08s ease, background-color 0.15s ease, border-color 0.15s ease;
+  font-size: 0.78rem;
 }
 
-.hud-btn:active {
-  transform: scale(0.97);
+.quick-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
 }
 
-/* Botão Hold-to-Hide (Peek) */
+.freeze-btn {
+  min-height: 46px;
+  background: rgba(0, 229, 255, 0.14);
+  border-color: rgba(0, 229, 255, 0.4);
+  color: #70f0ff;
+}
+
+.freeze-btn.frozen {
+  background: var(--lock-accent);
+  color: #000;
+  border-color: #fff;
+}
+
 .peek-btn {
-  width: 100%;
-  min-height: 48px;
+  min-height: 46px;
   background: rgba(255, 0, 85, 0.15);
   border-color: rgba(255, 0, 85, 0.45);
   color: #ff80aa;
-  letter-spacing: 0.04em;
 }
 
 .peek-btn.peeking {
   background: var(--peek-accent);
   color: #fff;
-  border-color: #fff;
 }
 
-/* Slider de Opacidade */
 .opacity-control {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .opacity-control label {
   display: flex;
   justify-content: space-between;
-  font-size: 0.75rem;
-  letter-spacing: 0.05em;
+  font-size: 0.72rem;
   color: var(--text-muted);
-}
-
-.opacity-control strong {
-  color: var(--text-main);
-  font-variant-numeric: tabular-nums;
 }
 
 #opacity-slider {
@@ -219,23 +304,18 @@ a-scene {
   width: 100%;
   height: 10px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.18);
-  outline: none;
+  background: rgba(255, 255, 255, 0.2);
 }
 
 #opacity-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
-  appearance: none;
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   border-radius: 50%;
   background: var(--neon-accent);
   border: 3px solid #000;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
-  cursor: pointer;
 }
 
-/* Botões de Camadas */
 .layer-toggles {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -243,28 +323,17 @@ a-scene {
 }
 
 .layer-btn {
-  min-height: 54px;
-  padding: 8px 6px;
+  min-height: 52px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: 3px;
   color: var(--text-muted);
-}
-
-.layer-index {
-  font-size: 0.7rem;
-  opacity: 0.7;
 }
 
 .layer-btn.active {
   background: rgba(0, 255, 102, 0.16);
   border-color: var(--neon-accent);
   color: #fff;
-}
-
-.layer-btn.active .layer-index {
-  color: var(--neon-accent);
-  opacity: 1;
 }

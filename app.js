@@ -1,8 +1,8 @@
-const STORAGE_KEY = 'webar_mural_calibration_v2';
+const STORAGE_KEY = 'webar_mural_markerless_v1';
 
 document.addEventListener('DOMContentLoaded', () => {
-  const markerAnchor = document.getElementById('marker-anchor');
-  const worldLockAnchor = document.getElementById('world-lock-anchor');
+  const videoEl = document.getElementById('camera-feed');
+  const stageEl = document.getElementById('projection-stage');
   const muralRig = document.getElementById('mural-rig');
 
   const layerIds = ['layer-wireframe', 'layer-fill', 'layer-details'];
@@ -26,17 +26,18 @@ document.addEventListener('DOMContentLoaded', () => {
   const dpadPanel = document.getElementById('dpad-panel');
   const coordsDisplay = document.getElementById('coords-display');
   const resetPosBtn = document.getElementById('btn-pos-reset');
+  const rotLeftBtn = document.getElementById('btn-rot-left');
+  const rotRightBtn = document.getElementById('btn-rot-right');
   const dpadButtons = document.querySelectorAll('.dpad-btn');
 
   const state = {
     globalOpacity: 0.85,
     isPeeking: false,
-    isFrozen: false,
-    isTargetVisible: false,
-    scaleMultiplier: 1.0,
-    baseScale: { x: 1.5, y: 1.5, z: 1 },
-    defaultPosition: { x: 0, y: 0, z: 0 },
-    position: { x: 0, y: 0, z: 0 },
+    isLocked: false,
+    x: 0,
+    y: 0,
+    scale: 1.0,
+    rotation: 0,
     layers: {
       'layer-wireframe': true,
       'layer-fill': true,
@@ -44,229 +45,181 @@ document.addEventListener('DOMContentLoaded', () => {
     },
   };
 
-  function saveCalibrationToStorage() {
+  // 1. Inicializa a câmera traseira do celular (Sem precisar de marcador!)
+  async function startCamera() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+        },
+        audio: false,
+      });
+      videoEl.srcObject = stream;
+    } catch (err) {
+      console.error('Erro ao acessar câmera:', err);
+      trackingText.textContent = 'Sem acesso à câmera';
+    }
+  }
+
+  function saveState() {
     try {
       localStorage.setItem(
         STORAGE_KEY,
-        JSON.stringify({ position: state.position, scaleMultiplier: state.scaleMultiplier })
+        JSON.stringify({ x: state.x, y: state.y, scale: state.scale, rotation: state.rotation })
       );
     } catch (e) {}
   }
 
-  function loadCalibrationFromStorage() {
+  function loadState() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return;
-      const parsed = JSON.parse(raw);
-      if (parsed.position) {
-        state.position.x = Number(parsed.position.x) || 0;
-        state.position.y = Number(parsed.position.y) || 0;
-      }
-      if (parsed.scaleMultiplier) {
-        state.scaleMultiplier = Number(parsed.scaleMultiplier) || 1.0;
-      }
+      const p = JSON.parse(raw);
+      state.x = Number(p.x) || 0;
+      state.y = Number(p.y) || 0;
+      state.scale = Number(p.scale) || 1.0;
+      state.rotation = Number(p.rotation) || 0;
     } catch (e) {}
   }
 
-  function applyTransformToRig() {
-    if (!muralRig || !muralRig.object3D) return;
-    muralRig.object3D.position.set(state.position.x, state.position.y, state.position.z);
-    muralRig.setAttribute('position', `${state.position.x} ${state.position.y} ${state.position.z}`);
-    if (coordsDisplay) {
-      coordsDisplay.textContent = `X: ${state.position.x.toFixed(2)} | Y: ${state.position.y.toFixed(2)}`;
-    }
-
-    const sx = +(state.baseScale.x * state.scaleMultiplier).toFixed(3);
-    const sy = +(state.baseScale.y * state.scaleMultiplier).toFixed(3);
-    muralRig.object3D.scale.set(sx, sy, 1);
-    muralRig.setAttribute('scale', `${sx} ${sy} 1`);
-    if (scaleDisplay) {
-      scaleDisplay.textContent = `${Math.round(state.scaleMultiplier * 100)}%`;
-    }
+  function applyTransform() {
+    muralRig.style.transform = `translate3d(${state.x}px, ${state.y}px, 0) scale(${state.scale}) rotate(${state.rotation}deg)`;
+    scaleDisplay.textContent = `${Math.round(state.scale * 100)}%`;
+    coordsDisplay.textContent = `X: ${Math.round(state.x)} | Y: ${Math.round(state.y)} | ${state.rotation}°`;
   }
 
-  if (muralRig) {
-    muralRig.addEventListener('loaded', () => {
-      loadCalibrationFromStorage();
-      applyTransformToRig();
-      syncLayersVisualState();
-    });
-  }
-
-  function updateTrackingBadge() {
-    if (!trackingBadge || !trackingText) return;
-    trackingBadge.classList.remove('status-searching', 'status-locked', 'status-frozen');
-    if (state.isFrozen) {
-      trackingBadge.classList.add('status-frozen');
-      trackingText.textContent = 'Guia Travado (Tela)';
-    } else if (state.isTargetVisible) {
-      trackingBadge.classList.add('status-locked');
-      trackingText.textContent = 'Travado (Locked)';
-    } else {
-      trackingBadge.classList.add('status-searching');
-      trackingText.textContent = 'Procurando alvo...';
-    }
-  }
-
-  function syncLayersVisualState() {
+  function syncLayers() {
     const effectiveOpacity = state.isPeeking ? 0 : state.globalOpacity;
     layerIds.forEach((id) => {
       const el = layerElements[id];
-      if (!el || !el.object3D) return;
-      const isLayerActive = state.layers[id];
-      const targetOpacity = isLayerActive ? effectiveOpacity : 0;
-      el.object3D.visible = targetOpacity > 0.001;
-
-      const mesh = el.getObject3D('mesh');
-      if (mesh && mesh.material) {
-        mesh.material.transparent = true;
-        mesh.material.opacity = targetOpacity;
-        mesh.material.needsUpdate = true;
-      } else {
-        el.setAttribute('material', 'opacity', targetOpacity);
-      }
+      if (!el) return;
+      const active = state.layers[id];
+      el.style.opacity = active ? effectiveOpacity : 0;
+      el.style.visibility = active && effectiveOpacity > 0.001 ? 'visible' : 'hidden';
     });
   }
 
-  if (markerAnchor) {
-    markerAnchor.addEventListener('targetFound', () => {
-      state.isTargetVisible = true;
-      updateTrackingBadge();
-      syncLayersVisualState();
-    });
+  // 2. Arrastar o lettering com o dedo diretamente na parede (quando não estiver travado)
+  let isDragging = false;
+  let startX = 0;
+  let startY = 0;
 
-    markerAnchor.addEventListener('targetLost', () => {
-      state.isTargetVisible = false;
-      updateTrackingBadge();
-    });
-  }
+  stageEl.addEventListener('pointerdown', (e) => {
+    if (state.isLocked) return;
+    isDragging = true;
+    startX = e.clientX - state.x;
+    startY = e.clientY - state.y;
+  });
 
-  // Botão Freeze / Modo Livre (Funciona com marcador ou sem marcador para teste rápido)
-  if (freezeBtn) {
-    freezeBtn.addEventListener('click', () => {
-      state.isFrozen = !state.isFrozen;
+  window.addEventListener('pointermove', (e) => {
+    if (!isDragging || state.isLocked) return;
+    state.x = e.clientX - startX;
+    state.y = e.clientY - startY;
+    applyTransform();
+  });
 
-      if (state.isFrozen) {
-        if (state.isTargetVisible) {
-          // Se o marcador está na câmera, trava na posição exata dele
-          markerAnchor.object3D.updateMatrixWorld(true);
-          worldLockAnchor.object3D.matrixAutoUpdate = false;
-          worldLockAnchor.object3D.matrix.copy(markerAnchor.object3D.matrixWorld);
-          worldLockAnchor.object3D.updateMatrixWorld(true);
-        } else {
-          // Se ainda não leu o marcador, projeta reto na frente da câmera (Modo Livre)
-          worldLockAnchor.object3D.matrixAutoUpdate = true;
-          worldLockAnchor.object3D.position.set(0, 0, -2.2);
-          worldLockAnchor.object3D.rotation.set(0, 0, 0);
-          worldLockAnchor.object3D.scale.set(1, 1, 1);
-        }
+  window.addEventListener('pointerup', () => {
+    if (isDragging) {
+      isDragging = false;
+      saveState();
+    }
+  });
 
-        worldLockAnchor.object3D.add(muralRig.object3D);
-        worldLockAnchor.object3D.visible = true;
-        freezeBtn.classList.add('frozen');
-        freezeBtn.textContent = 'VOLTAR P/ MARCADOR';
-      } else {
-        markerAnchor.object3D.add(muralRig.object3D);
-        worldLockAnchor.object3D.visible = false;
-        markerAnchor.object3D.visible = state.isTargetVisible;
-        freezeBtn.classList.remove('frozen');
-        freezeBtn.textContent = 'MODO LIVRE / FREEZE';
-      }
+  // 3. Botão Travar na Tela (Lock)
+  freezeBtn.addEventListener('click', () => {
+    state.isLocked = !state.isLocked;
+    freezeBtn.classList.toggle('frozen', state.isLocked);
+    freezeBtn.textContent = state.isLocked ? 'DESTRAVAR AJUSTE' : 'TRAVAR NA TELA (LOCK)';
 
-      updateTrackingBadge();
-      syncLayersVisualState();
-    });
-  }
+    trackingBadge.classList.toggle('status-locked', state.isLocked);
+    trackingBadge.classList.toggle('status-unlocked', !state.isLocked);
+    trackingText.textContent = state.isLocked ? 'Guia Travado (Locked)' : 'Modo Ajuste Livre';
+  });
 
-  if (toggleDpadBtn && dpadPanel) {
-    toggleDpadBtn.addEventListener('click', () => {
-      const isHidden = dpadPanel.classList.toggle('hidden');
-      toggleDpadBtn.classList.toggle('active', !isHidden);
-    });
-  }
-
-  function nudgePosition(dx, dy) {
-    state.position.x = +(state.position.x + dx).toFixed(3);
-    state.position.y = +(state.position.y + dy).toFixed(3);
-    applyTransformToRig();
-    saveCalibrationToStorage();
-  }
-
-  let repeatTimer = null;
-  let repeatInterval = null;
-  function stopContinuousMove() {
-    clearTimeout(repeatTimer);
-    clearInterval(repeatInterval);
-  }
+  // 4. D-Pad e Rotação
+  toggleDpadBtn.addEventListener('click', () => {
+    const isHidden = dpadPanel.classList.toggle('hidden');
+    toggleDpadBtn.classList.toggle('active', !isHidden);
+  });
 
   dpadButtons.forEach((btn) => {
     const dx = parseFloat(btn.getAttribute('data-dx')) || 0;
     const dy = parseFloat(btn.getAttribute('data-dy')) || 0;
-    btn.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
-      stopContinuousMove();
-      nudgePosition(dx, dy);
-      repeatTimer = setTimeout(() => {
-        repeatInterval = setInterval(() => nudgePosition(dx, dy), 70);
-      }, 300);
+    btn.addEventListener('click', () => {
+      state.x += dx;
+      state.y += dy;
+      applyTransform();
+      saveState();
     });
   });
 
-  window.addEventListener('pointerup', stopContinuousMove);
-  window.addEventListener('pointercancel', stopContinuousMove);
+  rotLeftBtn.addEventListener('click', () => {
+    state.rotation -= 1;
+    applyTransform();
+    saveState();
+  });
 
-  if (resetPosBtn) {
-    resetPosBtn.addEventListener('click', () => {
-      state.position = { ...state.defaultPosition };
-      state.scaleMultiplier = 1.0;
-      localStorage.removeItem(STORAGE_KEY);
-      applyTransformToRig();
-    });
-  }
+  rotRightBtn.addEventListener('click', () => {
+    state.rotation += 1;
+    applyTransform();
+    saveState();
+  });
 
+  resetPosBtn.addEventListener('click', () => {
+    state.x = 0;
+    state.y = 0;
+    state.scale = 1.0;
+    state.rotation = 0;
+    localStorage.removeItem(STORAGE_KEY);
+    applyTransform();
+  });
+
+  // 5. Camadas, Opacidade, Peek e Escala
   layerButtons.forEach((btn) => {
     btn.addEventListener('click', () => {
-      const layerId = btn.getAttribute('data-layer');
-      state.layers[layerId] = !state.layers[layerId];
-      btn.classList.toggle('active', state.layers[layerId]);
-      syncLayersVisualState();
+      const id = btn.getAttribute('data-layer');
+      state.layers[id] = !state.layers[id];
+      btn.classList.toggle('active', state.layers[id]);
+      syncLayers();
     });
   });
 
-  if (opacitySlider) {
-    opacitySlider.addEventListener('input', (e) => {
-      const rawValue = parseInt(e.target.value, 10);
-      state.globalOpacity = rawValue / 100;
-      if (opacityValue) opacityValue.textContent = `${rawValue}%`;
-      syncLayersVisualState();
-    });
-  }
+  opacitySlider.addEventListener('input', (e) => {
+    const val = parseInt(e.target.value, 10);
+    state.globalOpacity = val / 100;
+    opacityValue.textContent = `${val}%`;
+    syncLayers();
+  });
 
-  if (peekBtn) {
-    const startPeek = (e) => {
-      e.preventDefault();
-      state.isPeeking = true;
-      peekBtn.classList.add('peeking');
-      syncLayersVisualState();
-    };
-    const endPeek = (e) => {
-      if (!state.isPeeking) return;
-      e.preventDefault();
-      state.isPeeking = false;
-      peekBtn.classList.remove('peeking');
-      syncLayersVisualState();
-    };
-    peekBtn.addEventListener('pointerdown', startPeek);
-    window.addEventListener('pointerup', endPeek);
-    window.addEventListener('pointercancel', endPeek);
-  }
+  const startPeek = (e) => {
+    e.preventDefault();
+    state.isPeeking = true;
+    peekBtn.classList.add('peeking');
+    syncLayers();
+  };
+  const endPeek = () => {
+    if (!state.isPeeking) return;
+    state.isPeeking = false;
+    peekBtn.classList.remove('peeking');
+    syncLayers();
+  };
+  peekBtn.addEventListener('pointerdown', startPeek);
+  window.addEventListener('pointerup', endPeek);
+  window.addEventListener('pointercancel', endPeek);
 
-  function updateRigScale(delta) {
-    state.scaleMultiplier = Math.min(3.0, Math.max(0.25, +(state.scaleMultiplier + delta).toFixed(2)));
-    applyTransformToRig();
-    saveCalibrationToStorage();
+  function updateScale(delta) {
+    state.scale = Math.min(4.0, Math.max(0.2, +(state.scale + delta).toFixed(2)));
+    applyTransform();
+    saveState();
   }
+  scaleUpBtn.addEventListener('click', () => updateScale(0.05));
+  scaleDownBtn.addEventListener('click', () => updateScale(-0.05));
 
-  if (scaleUpBtn) scaleUpBtn.addEventListener('click', () => updateRigScale(0.05));
-  if (scaleDownBtn) scaleDownBtn.addEventListener('click', () => updateRigScale(-0.05));
+  // Start!
+  loadState();
+  applyTransform();
+  syncLayers();
+  startCamera();
 });
