@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<body style="background:#111; color:#fff; font-family:sans-serif; padding:40px; text-align:center;">
+  <h2>Clique abaixo para baixar as 3 Layers PNG de teste</h2>
+  <button onclick="downloadAll()" style="padding:16px 28px; font-size:18px; background:#00ff66; border:none; border-radius:8px; cursor:pointer; font-weight:bold;">
+    BAIXAR OS 3 PNGs AGORA
+  </button>
+  <script>
+    function createLayer(name, drawFn) {
+      const c = document.createElement('canvas');
+      c.width = 1600; c.height = 1000;
+      const ctx = c.getContext('2d');
+      drawFn(ctx);
+      const a = document.createElement('a');
+      a.download = name;
+      a.href = c.toDataURL('image/png');
+      a.click();
+    }
+    function downloadAll() {
+      // 1. Wireframe
+      createLayer('layer-wireframe.png', ctx => {
+        ctx.strokeStyle = '#ff0080'; ctx.lineWidth = 6;
+        ctx.strokeRect(100, 100, 1400, 800);
+        ctx.strokeStyle = '#00ff66'; ctx.lineWidth = 10;
+        ctx.font = 'bold 320px sans-serif';
+        ctx.strokeText('WILL JR', 180, 600);
+      });
+      // 2. Fill
+      setTimeout(() => createLayer('layer-fill.png', ctx => {
+        ctx.fillStyle = '#00e5ff';
+        ctx.font = 'bold 320px sans-serif';
+        ctx.fillText('WILL JR', 180, 600);
+      }), 300);
+      // 3. Details
+      setTimeout(() => createLayer('layer-details.png', ctx => {
+        ctx.strokeStyle = '#ffe600'; ctx.lineWidth = 16;
+        ctx.font = 'bold 320px sans-serif';
+        ctx.strokeText('WILL JR', 170, 590);
+      }), 600);
+    }
+  </script>
+</body>
+</html>

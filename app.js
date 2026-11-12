@@ -1,21 +1,16 @@
-/**
- * WebAR Mural Guide - Core Controller (Com suporte a Freeze Frame 3D)
- */
+const STORAGE_KEY = 'webar_mural_calibration_v2';
 
 document.addEventListener('DOMContentLoaded', () => {
-  // Referências da Cena A-Frame
   const markerAnchor = document.getElementById('marker-anchor');
   const worldLockAnchor = document.getElementById('world-lock-anchor');
   const muralRig = document.getElementById('mural-rig');
 
   const layerIds = ['layer-wireframe', 'layer-fill', 'layer-details'];
   const layerElements = {};
-
   layerIds.forEach((id) => {
     layerElements[id] = document.getElementById(id);
   });
 
-  // Referências do HUD
   const trackingBadge = document.getElementById('tracking-badge');
   const trackingText = document.getElementById('tracking-text');
   const opacitySlider = document.getElementById('opacity-slider');
@@ -27,15 +22,21 @@ document.addEventListener('DOMContentLoaded', () => {
   const scaleDownBtn = document.getElementById('btn-scale-down');
   const scaleDisplay = document.getElementById('scale-display');
 
-  // Estado da Aplicação
+  const toggleDpadBtn = document.getElementById('btn-toggle-dpad');
+  const dpadPanel = document.getElementById('dpad-panel');
+  const coordsDisplay = document.getElementById('coords-display');
+  const resetPosBtn = document.getElementById('btn-pos-reset');
+  const dpadButtons = document.querySelectorAll('.dpad-btn');
+
   const state = {
     globalOpacity: 0.85,
     isPeeking: false,
     isFrozen: false,
     isTargetVisible: false,
-    hasLockedOnce: false,
     scaleMultiplier: 1.0,
-    baseScale: { x: 2.5, y: 2.5, z: 1 },
+    baseScale: { x: 1.5, y: 1.5, z: 1 },
+    defaultPosition: { x: 0, y: 0, z: 0 },
+    position: { x: 0, y: 0, z: 0 },
     layers: {
       'layer-wireframe': true,
       'layer-fill': true,
@@ -43,28 +44,61 @@ document.addEventListener('DOMContentLoaded', () => {
     },
   };
 
-  // Inicializa a escala base a partir do HTML
-  muralRig.addEventListener('loaded', () => {
-    const initialScale = muralRig.getAttribute('scale');
-    if (initialScale) {
-      state.baseScale = {
-        x: parseFloat(initialScale.x) || 2.5,
-        y: parseFloat(initialScale.y) || 2.5,
-        z: 1,
-      };
+  function saveCalibrationToStorage() {
+    try {
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ position: state.position, scaleMultiplier: state.scaleMultiplier })
+      );
+    } catch (e) {}
+  }
+
+  function loadCalibrationFromStorage() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (parsed.position) {
+        state.position.x = Number(parsed.position.x) || 0;
+        state.position.y = Number(parsed.position.y) || 0;
+      }
+      if (parsed.scaleMultiplier) {
+        state.scaleMultiplier = Number(parsed.scaleMultiplier) || 1.0;
+      }
+    } catch (e) {}
+  }
+
+  function applyTransformToRig() {
+    if (!muralRig || !muralRig.object3D) return;
+    muralRig.object3D.position.set(state.position.x, state.position.y, state.position.z);
+    muralRig.setAttribute('position', `${state.position.x} ${state.position.y} ${state.position.z}`);
+    if (coordsDisplay) {
+      coordsDisplay.textContent = `X: ${state.position.x.toFixed(2)} | Y: ${state.position.y.toFixed(2)}`;
     }
-    syncLayersVisualState();
-  });
 
-  /**
-   * Atualiza o badge de status no topo conforme combinação de Tracking e Freeze
-   */
+    const sx = +(state.baseScale.x * state.scaleMultiplier).toFixed(3);
+    const sy = +(state.baseScale.y * state.scaleMultiplier).toFixed(3);
+    muralRig.object3D.scale.set(sx, sy, 1);
+    muralRig.setAttribute('scale', `${sx} ${sy} 1`);
+    if (scaleDisplay) {
+      scaleDisplay.textContent = `${Math.round(state.scaleMultiplier * 100)}%`;
+    }
+  }
+
+  if (muralRig) {
+    muralRig.addEventListener('loaded', () => {
+      loadCalibrationFromStorage();
+      applyTransformToRig();
+      syncLayersVisualState();
+    });
+  }
+
   function updateTrackingBadge() {
+    if (!trackingBadge || !trackingText) return;
     trackingBadge.classList.remove('status-searching', 'status-locked', 'status-frozen');
-
     if (state.isFrozen) {
       trackingBadge.classList.add('status-frozen');
-      trackingText.textContent = 'Guia Travado (Freeze)';
+      trackingText.textContent = 'Guia Travado (Tela)';
     } else if (state.isTargetVisible) {
       trackingBadge.classList.add('status-locked');
       trackingText.textContent = 'Travado (Locked)';
@@ -74,19 +108,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  /**
-   * Atualiza visibilidade e opacidade diretamente nas malhas Three.js
-   */
   function syncLayersVisualState() {
     const effectiveOpacity = state.isPeeking ? 0 : state.globalOpacity;
-
     layerIds.forEach((id) => {
       const el = layerElements[id];
-      if (!el) return;
-
+      if (!el || !el.object3D) return;
       const isLayerActive = state.layers[id];
       const targetOpacity = isLayerActive ? effectiveOpacity : 0;
-
       el.object3D.visible = targetOpacity > 0.001;
 
       const mesh = el.getObject3D('mesh');
@@ -100,54 +128,102 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // 1. Eventos de Rastreamento do Marcador (MindAR)
-  markerAnchor.addEventListener('targetFound', () => {
-    state.isTargetVisible = true;
-    state.hasLockedOnce = true;
-    freezeBtn.disabled = false; // Habilita o Freeze após a primeira leitura válida
-    updateTrackingBadge();
-    syncLayersVisualState();
+  if (markerAnchor) {
+    markerAnchor.addEventListener('targetFound', () => {
+      state.isTargetVisible = true;
+      updateTrackingBadge();
+      syncLayersVisualState();
+    });
+
+    markerAnchor.addEventListener('targetLost', () => {
+      state.isTargetVisible = false;
+      updateTrackingBadge();
+    });
+  }
+
+  // Botão Freeze / Modo Livre (Funciona com marcador ou sem marcador para teste rápido)
+  if (freezeBtn) {
+    freezeBtn.addEventListener('click', () => {
+      state.isFrozen = !state.isFrozen;
+
+      if (state.isFrozen) {
+        if (state.isTargetVisible) {
+          // Se o marcador está na câmera, trava na posição exata dele
+          markerAnchor.object3D.updateMatrixWorld(true);
+          worldLockAnchor.object3D.matrixAutoUpdate = false;
+          worldLockAnchor.object3D.matrix.copy(markerAnchor.object3D.matrixWorld);
+          worldLockAnchor.object3D.updateMatrixWorld(true);
+        } else {
+          // Se ainda não leu o marcador, projeta reto na frente da câmera (Modo Livre)
+          worldLockAnchor.object3D.matrixAutoUpdate = true;
+          worldLockAnchor.object3D.position.set(0, 0, -2.2);
+          worldLockAnchor.object3D.rotation.set(0, 0, 0);
+          worldLockAnchor.object3D.scale.set(1, 1, 1);
+        }
+
+        worldLockAnchor.object3D.add(muralRig.object3D);
+        worldLockAnchor.object3D.visible = true;
+        freezeBtn.classList.add('frozen');
+        freezeBtn.textContent = 'VOLTAR P/ MARCADOR';
+      } else {
+        markerAnchor.object3D.add(muralRig.object3D);
+        worldLockAnchor.object3D.visible = false;
+        markerAnchor.object3D.visible = state.isTargetVisible;
+        freezeBtn.classList.remove('frozen');
+        freezeBtn.textContent = 'MODO LIVRE / FREEZE';
+      }
+
+      updateTrackingBadge();
+      syncLayersVisualState();
+    });
+  }
+
+  if (toggleDpadBtn && dpadPanel) {
+    toggleDpadBtn.addEventListener('click', () => {
+      const isHidden = dpadPanel.classList.toggle('hidden');
+      toggleDpadBtn.classList.toggle('active', !isHidden);
+    });
+  }
+
+  function nudgePosition(dx, dy) {
+    state.position.x = +(state.position.x + dx).toFixed(3);
+    state.position.y = +(state.position.y + dy).toFixed(3);
+    applyTransformToRig();
+    saveCalibrationToStorage();
+  }
+
+  let repeatTimer = null;
+  let repeatInterval = null;
+  function stopContinuousMove() {
+    clearTimeout(repeatTimer);
+    clearInterval(repeatInterval);
+  }
+
+  dpadButtons.forEach((btn) => {
+    const dx = parseFloat(btn.getAttribute('data-dx')) || 0;
+    const dy = parseFloat(btn.getAttribute('data-dy')) || 0;
+    btn.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      stopContinuousMove();
+      nudgePosition(dx, dy);
+      repeatTimer = setTimeout(() => {
+        repeatInterval = setInterval(() => nudgePosition(dx, dy), 70);
+      }, 300);
+    });
   });
 
-  markerAnchor.addEventListener('targetLost', () => {
-    state.isTargetVisible = false;
-    updateTrackingBadge();
-  });
+  window.addEventListener('pointerup', stopContinuousMove);
+  window.addEventListener('pointercancel', stopContinuousMove);
 
-  // 2. Lógica de Freeze Frame (Desacoplamento de Matriz 4x4)
-  freezeBtn.addEventListener('click', () => {
-    if (!state.hasLockedOnce && !state.isFrozen) return;
+  if (resetPosBtn) {
+    resetPosBtn.addEventListener('click', () => {
+      state.position = { ...state.defaultPosition };
+      state.scaleMultiplier = 1.0;
+      localStorage.removeItem(STORAGE_KEY);
+      applyTransformToRig();
+    });
+  }
 
-    state.isFrozen = !state.isFrozen;
-
-    if (state.isFrozen) {
-      // Força a atualização da matriz do marcador e copia para a âncora de mundo
-      markerAnchor.object3D.updateMatrixWorld(true);
-      worldLockAnchor.object3D.matrixAutoUpdate = false;
-      worldLockAnchor.object3D.matrix.copy(markerAnchor.object3D.matrixWorld);
-      worldLockAnchor.object3D.updateMatrixWorld(true);
-
-      // Reparenta o rig do mural para a âncora que nunca é ocultada pelo MindAR
-      worldLockAnchor.object3D.add(muralRig.object3D);
-      worldLockAnchor.object3D.visible = true;
-
-      freezeBtn.classList.add('frozen');
-      freezeBtn.textContent = 'DESTRAVAR GUIA';
-    } else {
-      // Devolve o rig do mural para dentro da âncora rastreada pelo MindAR
-      markerAnchor.object3D.add(muralRig.object3D);
-      worldLockAnchor.object3D.visible = false;
-      markerAnchor.object3D.visible = state.isTargetVisible;
-
-      freezeBtn.classList.remove('frozen');
-      freezeBtn.textContent = 'TRAVAR GUIA (FREEZE)';
-    }
-
-    updateTrackingBadge();
-    syncLayersVisualState();
-  });
-
-  // 3. Toggle Individual de Camadas
   layerButtons.forEach((btn) => {
     btn.addEventListener('click', () => {
       const layerId = btn.getAttribute('data-layer');
@@ -157,53 +233,40 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  // 4. Controle de Opacidade Global
-  opacitySlider.addEventListener('input', (e) => {
-    const rawValue = parseInt(e.target.value, 10);
-    state.globalOpacity = rawValue / 100;
-    opacityValue.textContent = `${rawValue}%`;
-    syncLayersVisualState();
-  });
-
-  // 5. Botão "Piscar / Ocultar Guia" (Hold-to-Hide)
-  const startPeek = (e) => {
-    e.preventDefault();
-    state.isPeeking = true;
-    peekBtn.classList.add('peeking');
-    syncLayersVisualState();
-  };
-
-  const endPeek = (e) => {
-    if (!state.isPeeking) return;
-    e.preventDefault();
-    state.isPeeking = false;
-    peekBtn.classList.remove('peeking');
-    syncLayersVisualState();
-  };
-
-  peekBtn.addEventListener('pointerdown', startPeek);
-  window.addEventListener('pointerup', endPeek);
-  window.addEventListener('pointercancel', endPeek);
-
-  // 6. Ajuste Fino de Escala em Tempo Real (+ / -)
-  const SCALE_STEP = 0.05;
-  const MIN_SCALE = 0.25;
-  const MAX_SCALE = 3.0;
-
-  function updateRigScale(delta) {
-    const nextMultiplier = Math.min(
-      MAX_SCALE,
-      Math.max(MIN_SCALE, +(state.scaleMultiplier + delta).toFixed(2))
-    );
-    state.scaleMultiplier = nextMultiplier;
-
-    const newX = (state.baseScale.x * state.scaleMultiplier).toFixed(3);
-    const newY = (state.baseScale.y * state.scaleMultiplier).toFixed(3);
-
-    muralRig.setAttribute('scale', `${newX} ${newY} 1`);
-    scaleDisplay.textContent = `${Math.round(state.scaleMultiplier * 100)}%`;
+  if (opacitySlider) {
+    opacitySlider.addEventListener('input', (e) => {
+      const rawValue = parseInt(e.target.value, 10);
+      state.globalOpacity = rawValue / 100;
+      if (opacityValue) opacityValue.textContent = `${rawValue}%`;
+      syncLayersVisualState();
+    });
   }
 
-  scaleUpBtn.addEventListener('click', () => updateRigScale(SCALE_STEP));
-  scaleDownBtn.addEventListener('click', () => updateRigScale(-SCALE_STEP));
+  if (peekBtn) {
+    const startPeek = (e) => {
+      e.preventDefault();
+      state.isPeeking = true;
+      peekBtn.classList.add('peeking');
+      syncLayersVisualState();
+    };
+    const endPeek = (e) => {
+      if (!state.isPeeking) return;
+      e.preventDefault();
+      state.isPeeking = false;
+      peekBtn.classList.remove('peeking');
+      syncLayersVisualState();
+    };
+    peekBtn.addEventListener('pointerdown', startPeek);
+    window.addEventListener('pointerup', endPeek);
+    window.addEventListener('pointercancel', endPeek);
+  }
+
+  function updateRigScale(delta) {
+    state.scaleMultiplier = Math.min(3.0, Math.max(0.25, +(state.scaleMultiplier + delta).toFixed(2)));
+    applyTransformToRig();
+    saveCalibrationToStorage();
+  }
+
+  if (scaleUpBtn) scaleUpBtn.addEventListener('click', () => updateRigScale(0.05));
+  if (scaleDownBtn) scaleDownBtn.addEventListener('click', () => updateRigScale(-0.05));
 });
