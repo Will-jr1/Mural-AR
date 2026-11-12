@@ -3,34 +3,93 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-  <title>WebAR Mural Guide — Markerless</title>
+  <title>WebAR Mural 3D — Perspectiva & Giroscópio</title>
+
+  <!-- Motor 3D A-Frame -->
+  <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
 
-  <!-- 1. FEED DA CÂMERA AO VIVO NO FUNDO -->
+  <!-- 1. CÂMERA REAL NO FUNDO -->
   <video id="camera-feed" autoplay playsinline muted></video>
 
-  <!-- 2. PALCO DE PROJEÇÃO DA ARTE (3 CAMADAS EMPILHADAS) -->
-  <main id="projection-stage">
-    <div id="mural-rig">
-      <img id="layer-wireframe" class="mural-layer" src="./assets/layer-wireframe.png" alt="Layer 1 Esqueleto" />
-      <img id="layer-fill" class="mural-layer" src="./assets/layer-fill.png" alt="Layer 2 Preenchimento" />
-      <img id="layer-details" class="mural-layer" src="./assets/layer-details.png" alt="Layer 3 Detalhes" />
-    </div>
-  </main>
+  <!-- 2. CENA 3D COM GIROSCÓPIO (Faz a arte ficar presa no espaço 3D!) -->
+  <a-scene
+    embedded
+    vr-mode-ui="enabled: false"
+    device-orientation-permission-ui="enabled: false"
+    renderer="alpha: true; antialias: true; colorManagement: true;"
+  >
+    <a-assets timeout="10000">
+      <img id="tex-wireframe" src="./assets/layer-wireframe.png" crossorigin="anonymous" />
+      <img id="tex-fill" src="./assets/layer-fill.png" crossorigin="anonymous" />
+      <img id="tex-details" src="./assets/layer-details.png" crossorigin="anonymous" />
+    </a-assets>
 
-  <!-- 3. HUD DE CONTROLE -->
+    <!-- A câmera 3D lê o giroscópio do celular (magicWindowTrackingEnabled) -->
+    <a-entity id="camera-rig" position="0 0 0">
+      <a-camera
+        id="ar-camera"
+        position="0 0 0"
+        look-controls="magicWindowTrackingEnabled: true; touchEnabled: false; mouseEnabled: false"
+      ></a-camera>
+    </a-entity>
+
+    <!-- ÂNCORA 3D DA PAREDE (Fica a 2.2 metros de profundidade Z = -2.2) -->
+    <a-entity id="wall-anchor" position="0 0 -2.2" rotation="0 0 0">
+      <a-entity id="mural-rig" position="0 0 0" rotation="0 0 0" scale="1.5 1.5 1">
+
+        <!-- Grade 3D auxiliar para enxergar o plano e a perspectiva da parede -->
+        <a-plane
+          id="perspective-grid"
+          position="0 0 0"
+          width="1.65"
+          height="1.05"
+          material="color: #00ff66; wireframe: true; segmentsWidth: 8; segmentsHeight: 5; opacity: 0.35; transparent: true"
+        ></a-plane>
+
+        <!-- Layer 1: Esqueleto -->
+        <a-plane
+          id="layer-wireframe"
+          position="0 0 0.002"
+          width="1.6"
+          height="1.0"
+          material="src: #tex-wireframe; transparent: true; opacity: 0.85; alphaTest: 0.01; shader: flat; side: double; depthWrite: false"
+        ></a-plane>
+
+        <!-- Layer 2: Preenchimento -->
+        <a-plane
+          id="layer-fill"
+          position="0 0 0.004"
+          width="1.6"
+          height="1.0"
+          material="src: #tex-fill; transparent: true; opacity: 0.85; alphaTest: 0.01; shader: flat; side: double; depthWrite: false"
+        ></a-plane>
+
+        <!-- Layer 3: Detalhes -->
+        <a-plane
+          id="layer-details"
+          position="0 0 0.006"
+          width="1.6"
+          height="1.0"
+          material="src: #tex-details; transparent: true; opacity: 0.85; alphaTest: 0.01; shader: flat; side: double; depthWrite: false"
+        ></a-plane>
+
+      </a-entity>
+    </a-entity>
+  </a-scene>
+
+  <!-- 3. HUD DE CONTROLE 3D -->
   <div id="hud-container">
     <header class="hud-top">
       <div class="top-bar-row">
-        <div id="tracking-badge" class="status-badge status-unlocked">
-          <span class="status-dot"></span>
-          <span id="tracking-text">Modo Ajuste Livre</span>
-        </div>
+        <button id="btn-recenter-wall" class="hud-btn anchor-wall-btn">
+          🎯 CRAVAR NA PAREDE AQUI
+        </button>
 
         <div class="top-right-tools">
-          <button id="btn-toggle-dpad" class="hud-btn tool-toggle-btn">XY / ROT</button>
+          <button id="btn-toggle-dpad" class="hud-btn tool-toggle-btn">3D / TILT</button>
           <div class="scale-controls">
             <button id="btn-scale-down" class="hud-btn icon-btn">−</button>
             <span id="scale-display" class="scale-readout">100%</span>
@@ -39,32 +98,38 @@
         </div>
       </div>
 
-      <!-- Gaveta D-Pad + Rotação -->
+      <!-- Gaveta de Perspectiva 3D (Inclinacão da Parede + Posição) -->
       <div id="dpad-panel" class="dpad-drawer hidden">
         <div class="dpad-info">
-          <span class="dpad-title">POSIÇÃO & ROTAÇÃO</span>
-          <code id="coords-display" class="coords-readout">X: 0 | Y: 0 | 0°</code>
-          <div class="rot-buttons">
-            <button id="btn-rot-left" class="hud-btn reset-btn">↺ -1°</button>
-            <button id="btn-rot-right" class="hud-btn reset-btn">↻ +1°</button>
+          <span class="dpad-title">PERSPECTIVA 3D DA PAREDE</span>
+          <code id="coords-display" class="coords-readout">Yaw: 0° | Pitch: 0°</code>
+          
+          <div class="tilt-controls">
+            <button class="hud-btn tilt-btn" data-ry="-4">◀ Virar Esq</button>
+            <button class="hud-btn tilt-btn" data-ry="4">Virar Dir ▶</button>
+            <button class="hud-btn tilt-btn" data-rx="-4">▲ Inclinar Cima</button>
+            <button class="hud-btn tilt-btn" data-rx="4">▼ Inclinar Baixo</button>
+            <button class="hud-btn tilt-btn" data-rz="-2">↺ Girar -2°</button>
+            <button class="hud-btn tilt-btn" data-rz="2">↻ Girar +2°</button>
           </div>
-          <button id="btn-pos-reset" class="hud-btn reset-btn">CENTRALIZAR</button>
+
+          <button id="btn-pos-reset" class="hud-btn reset-btn">ZERAR PERSPECTIVA</button>
         </div>
 
         <div class="dpad-grid">
-          <button class="hud-btn dpad-btn up" data-dx="0" data-dy="-5">▲</button>
-          <button class="hud-btn dpad-btn left" data-dx="-5" data-dy="0">◀</button>
+          <button class="hud-btn dpad-btn up" data-dx="0" data-dy="0.06">▲</button>
+          <button class="hud-btn dpad-btn left" data-dx="-0.06" data-dy="0">◀</button>
           <div class="dpad-center-dot"></div>
-          <button class="hud-btn dpad-btn right" data-dx="5" data-dy="0">▶</button>
-          <button class="hud-btn dpad-btn down" data-dx="0" data-dy="5">▼</button>
+          <button class="hud-btn dpad-btn right" data-dx="0.06" data-dy="0">▶</button>
+          <button class="hud-btn dpad-btn down" data-dx="0" data-dy="-0.06">▼</button>
         </div>
       </div>
     </header>
 
     <footer class="hud-bottom">
       <div class="quick-actions">
-        <button id="btn-freeze" class="hud-btn freeze-btn">
-          TRAVAR NA TELA (LOCK)
+        <button id="btn-toggle-grid" class="hud-btn grid-btn active">
+          GRID 3D: ON
         </button>
         <button id="btn-peek" class="hud-btn peek-btn">
           SEGURE P/ OCULTAR (PEEK)

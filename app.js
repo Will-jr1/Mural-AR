@@ -1,9 +1,9 @@
-const STORAGE_KEY = 'webar_mural_markerless_v1';
-
 document.addEventListener('DOMContentLoaded', () => {
   const videoEl = document.getElementById('camera-feed');
-  const stageEl = document.getElementById('projection-stage');
+  const arCamera = document.getElementById('ar-camera');
+  const wallAnchor = document.getElementById('wall-anchor');
   const muralRig = document.getElementById('mural-rig');
+  const perspectiveGrid = document.getElementById('perspective-grid');
 
   const layerIds = ['layer-wireframe', 'layer-fill', 'layer-details'];
   const layerElements = {};
@@ -11,11 +11,10 @@ document.addEventListener('DOMContentLoaded', () => {
     layerElements[id] = document.getElementById(id);
   });
 
-  const trackingBadge = document.getElementById('tracking-badge');
-  const trackingText = document.getElementById('tracking-text');
+  const recenterWallBtn = document.getElementById('btn-recenter-wall');
+  const toggleGridBtn = document.getElementById('btn-toggle-grid');
   const opacitySlider = document.getElementById('opacity-slider');
   const opacityValue = document.getElementById('opacity-value');
-  const freezeBtn = document.getElementById('btn-freeze');
   const peekBtn = document.getElementById('btn-peek');
   const layerButtons = document.querySelectorAll('.layer-btn');
   const scaleUpBtn = document.getElementById('btn-scale-up');
@@ -26,18 +25,17 @@ document.addEventListener('DOMContentLoaded', () => {
   const dpadPanel = document.getElementById('dpad-panel');
   const coordsDisplay = document.getElementById('coords-display');
   const resetPosBtn = document.getElementById('btn-pos-reset');
-  const rotLeftBtn = document.getElementById('btn-rot-left');
-  const rotRightBtn = document.getElementById('btn-rot-right');
   const dpadButtons = document.querySelectorAll('.dpad-btn');
+  const tiltButtons = document.querySelectorAll('.tilt-btn');
 
   const state = {
     globalOpacity: 0.85,
     isPeeking: false,
-    isLocked: false,
-    x: 0,
-    y: 0,
+    showGrid: true,
     scale: 1.0,
-    rotation: 0,
+    baseScale: 1.5,
+    pos: { x: 0, y: 0, z: 0 },
+    rot: { x: 0, y: 0, z: 0 }, // Inclinação 3D (Pitch, Yaw, Roll) para perspectiva de parede
     layers: {
       'layer-wireframe': true,
       'layer-fill': true,
@@ -45,100 +43,91 @@ document.addEventListener('DOMContentLoaded', () => {
     },
   };
 
-  // 1. Inicializa a câmera traseira do celular (Sem precisar de marcador!)
+  // 1. Inicia câmera traseira
   async function startCamera() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: { ideal: 'environment' },
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-        },
+        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
         audio: false,
       });
       videoEl.srcObject = stream;
-    } catch (err) {
-      console.error('Erro ao acessar câmera:', err);
-      trackingText.textContent = 'Sem acesso à câmera';
+    } catch (e) {
+      console.error('Erro câmera:', e);
     }
   }
 
-  function saveState() {
-    try {
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({ x: state.x, y: state.y, scale: state.scale, rotation: state.rotation })
-      );
-    } catch (e) {}
-  }
+  // 2. Aplica Posição, Escala e Perspectiva 3D (Rotação X, Y, Z) no A-Frame
+  function applyTransform3D() {
+    if (!muralRig || !muralRig.object3D) return;
 
-  function loadState() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return;
-      const p = JSON.parse(raw);
-      state.x = Number(p.x) || 0;
-      state.y = Number(p.y) || 0;
-      state.scale = Number(p.scale) || 1.0;
-      state.rotation = Number(p.rotation) || 0;
-    } catch (e) {}
-  }
+    muralRig.setAttribute('position', `${state.pos.x} ${state.pos.y} ${state.pos.z}`);
+    muralRig.setAttribute('rotation', `${state.rot.x} ${state.rot.y} ${state.rot.z}`);
 
-  function applyTransform() {
-    muralRig.style.transform = `translate3d(${state.x}px, ${state.y}px, 0) scale(${state.scale}) rotate(${state.rotation}deg)`;
+    const s = +(state.baseScale * state.scale).toFixed(3);
+    muralRig.setAttribute('scale', `${s} ${s} 1`);
+
     scaleDisplay.textContent = `${Math.round(state.scale * 100)}%`;
-    coordsDisplay.textContent = `X: ${Math.round(state.x)} | Y: ${Math.round(state.y)} | ${state.rotation}°`;
+    coordsDisplay.textContent = `Perspectiva Y:${state.rot.y}° | X:${state.rot.x}°`;
   }
 
-  function syncLayers() {
+  // 3. Atualiza Opacidade das Camadas 3D
+  function syncLayers3D() {
     const effectiveOpacity = state.isPeeking ? 0 : state.globalOpacity;
+
     layerIds.forEach((id) => {
       const el = layerElements[id];
-      if (!el) return;
+      if (!el || !el.object3D) return;
       const active = state.layers[id];
-      el.style.opacity = active ? effectiveOpacity : 0;
-      el.style.visibility = active && effectiveOpacity > 0.001 ? 'visible' : 'hidden';
+      const targetOpacity = active ? effectiveOpacity : 0;
+
+      el.object3D.visible = targetOpacity > 0.001;
+      const mesh = el.getObject3D('mesh');
+      if (mesh && mesh.material) {
+        mesh.material.transparent = true;
+        mesh.material.opacity = targetOpacity;
+        mesh.material.needsUpdate = true;
+      }
     });
+
+    if (perspectiveGrid && perspectiveGrid.object3D) {
+      perspectiveGrid.object3D.visible = state.showGrid && !state.isPeeking;
+    }
   }
 
-  // 2. Arrastar o lettering com o dedo diretamente na parede (quando não estiver travado)
-  let isDragging = false;
-  let startX = 0;
-  let startY = 0;
-
-  stageEl.addEventListener('pointerdown', (e) => {
-    if (state.isLocked) return;
-    isDragging = true;
-    startX = e.clientX - state.x;
-    startY = e.clientY - state.y;
-  });
-
-  window.addEventListener('pointermove', (e) => {
-    if (!isDragging || state.isLocked) return;
-    state.x = e.clientX - startX;
-    state.y = e.clientY - startY;
-    applyTransform();
-  });
-
-  window.addEventListener('pointerup', () => {
-    if (isDragging) {
-      isDragging = false;
-      saveState();
+  // 4. Botão "CRAVAR NA PAREDE AQUI": Ativa Giroscópio no iOS e posiciona o mural 3D onde a câmera olha!
+  recenterWallBtn.addEventListener('click', async () => {
+    // No iPhone (iOS 13+), pede permissão explícita para ler o Giroscópio 3D
+    if (
+      typeof DeviceOrientationEvent !== 'undefined' &&
+      typeof DeviceOrientationEvent.requestPermission === 'function'
+    ) {
+      try {
+        await DeviceOrientationEvent.requestPermission();
+      } catch (e) {
+        console.warn('Permissão de giroscópio negada:', e);
+      }
     }
+
+    // Pega a direção atual para onde o celular está apontando no mundo 3D
+    const camObj = arCamera.object3D;
+    const distance = 2.2; // 2.2 metros na frente da lente
+    const dir = new THREE.Vector3(0, 0, -1);
+    dir.applyQuaternion(camObj.quaternion);
+
+    const targetPos = new THREE.Vector3().copy(camObj.position).add(dir.multiplyScalar(distance));
+
+    // Coloca a âncora naquele ponto da parede e vira de frente para o usuário
+    wallAnchor.object3D.position.copy(targetPos);
+    wallAnchor.object3D.lookAt(camObj.position);
+
+    // Feedback visual no botão
+    recenterWallBtn.textContent = '✅ PAREDE TRAVADA (3D)';
+    setTimeout(() => {
+      recenterWallBtn.textContent = '🎯 CRAVAR NA PAREDE AQUI';
+    }, 1500);
   });
 
-  // 3. Botão Travar na Tela (Lock)
-  freezeBtn.addEventListener('click', () => {
-    state.isLocked = !state.isLocked;
-    freezeBtn.classList.toggle('frozen', state.isLocked);
-    freezeBtn.textContent = state.isLocked ? 'DESTRAVAR AJUSTE' : 'TRAVAR NA TELA (LOCK)';
-
-    trackingBadge.classList.toggle('status-locked', state.isLocked);
-    trackingBadge.classList.toggle('status-unlocked', !state.isLocked);
-    trackingText.textContent = state.isLocked ? 'Guia Travado (Locked)' : 'Modo Ajuste Livre';
-  });
-
-  // 4. D-Pad e Rotação
+  // 5. Controles de Perspectiva 3D (Inclinacão da Parede) e D-Pad
   toggleDpadBtn.addEventListener('click', () => {
     const isHidden = dpadPanel.classList.toggle('hidden');
     toggleDpadBtn.classList.toggle('active', !isHidden);
@@ -148,41 +137,46 @@ document.addEventListener('DOMContentLoaded', () => {
     const dx = parseFloat(btn.getAttribute('data-dx')) || 0;
     const dy = parseFloat(btn.getAttribute('data-dy')) || 0;
     btn.addEventListener('click', () => {
-      state.x += dx;
-      state.y += dy;
-      applyTransform();
-      saveState();
+      state.pos.x = +(state.pos.x + dx).toFixed(2);
+      state.pos.y = +(state.pos.y + dy).toFixed(2);
+      applyTransform3D();
     });
   });
 
-  rotLeftBtn.addEventListener('click', () => {
-    state.rotation -= 1;
-    applyTransform();
-    saveState();
-  });
-
-  rotRightBtn.addEventListener('click', () => {
-    state.rotation += 1;
-    applyTransform();
-    saveState();
+  tiltButtons.forEach((btn) => {
+    const rx = parseFloat(btn.getAttribute('data-rx')) || 0;
+    const ry = parseFloat(btn.getAttribute('data-ry')) || 0;
+    const rz = parseFloat(btn.getAttribute('data-rz')) || 0;
+    btn.addEventListener('click', () => {
+      state.rot.x += rx;
+      state.rot.y += ry;
+      state.rot.z += rz;
+      applyTransform3D();
+    });
   });
 
   resetPosBtn.addEventListener('click', () => {
-    state.x = 0;
-    state.y = 0;
+    state.pos = { x: 0, y: 0, z: 0 };
+    state.rot = { x: 0, y: 0, z: 0 };
     state.scale = 1.0;
-    state.rotation = 0;
-    localStorage.removeItem(STORAGE_KEY);
-    applyTransform();
+    applyTransform3D();
   });
 
-  // 5. Camadas, Opacidade, Peek e Escala
+  // 6. Grid 3D Auxiliar (ajuda muito a alinhar as bordas com o teto e chão da parede)
+  toggleGridBtn.addEventListener('click', () => {
+    state.showGrid = !state.showGrid;
+    toggleGridBtn.classList.toggle('active', state.showGrid);
+    toggleGridBtn.textContent = state.showGrid ? 'GRID 3D: ON' : 'GRID 3D: OFF';
+    syncLayers3D();
+  });
+
+  // 7. Camadas, Opacidade, Peek e Escala
   layerButtons.forEach((btn) => {
     btn.addEventListener('click', () => {
       const id = btn.getAttribute('data-layer');
       state.layers[id] = !state.layers[id];
       btn.classList.toggle('active', state.layers[id]);
-      syncLayers();
+      syncLayers3D();
     });
   });
 
@@ -190,36 +184,38 @@ document.addEventListener('DOMContentLoaded', () => {
     const val = parseInt(e.target.value, 10);
     state.globalOpacity = val / 100;
     opacityValue.textContent = `${val}%`;
-    syncLayers();
+    syncLayers3D();
   });
 
   const startPeek = (e) => {
     e.preventDefault();
     state.isPeeking = true;
     peekBtn.classList.add('peeking');
-    syncLayers();
+    syncLayers3D();
   };
   const endPeek = () => {
     if (!state.isPeeking) return;
     state.isPeeking = false;
     peekBtn.classList.remove('peeking');
-    syncLayers();
+    syncLayers3D();
   };
   peekBtn.addEventListener('pointerdown', startPeek);
   window.addEventListener('pointerup', endPeek);
   window.addEventListener('pointercancel', endPeek);
 
-  function updateScale(delta) {
-    state.scale = Math.min(4.0, Math.max(0.2, +(state.scale + delta).toFixed(2)));
-    applyTransform();
-    saveState();
-  }
-  scaleUpBtn.addEventListener('click', () => updateScale(0.05));
-  scaleDownBtn.addEventListener('click', () => updateScale(-0.05));
+  scaleUpBtn.addEventListener('click', () => {
+    state.scale = Math.min(3.5, +(state.scale + 0.08).toFixed(2));
+    applyTransform3D();
+  });
+  scaleDownBtn.addEventListener('click', () => {
+    state.scale = Math.max(0.25, +(state.scale - 0.08).toFixed(2));
+    applyTransform3D();
+  });
 
-  // Start!
-  loadState();
-  applyTransform();
-  syncLayers();
+  muralRig.addEventListener('loaded', () => {
+    applyTransform3D();
+    syncLayers3D();
+  });
+
   startCamera();
 });
