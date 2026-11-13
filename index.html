@@ -3,23 +3,24 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-  <title>WebAR Mural 3D — Perspectiva & Giroscópio</title>
+  <title>WebAR Mural Pro — 6DoF & Hard Lock</title>
 
-  <!-- Motor 3D A-Frame -->
   <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
 
-  <!-- 1. CÂMERA REAL NO FUNDO -->
+  <!-- 1. CÂMERA DE FUNDO (Usada no modo Giroscópio / Hard Lock) -->
   <video id="camera-feed" autoplay playsinline muted></video>
 
-  <!-- 2. CENA 3D COM GIROSCÓPIO (Faz a arte ficar presa no espaço 3D!) -->
+  <!-- 2. CENA 3D A-FRAME + SUPORTE WEBXR (SLAM 6DoF) -->
   <a-scene
+    id="main-scene"
     embedded
     vr-mode-ui="enabled: false"
     device-orientation-permission-ui="enabled: false"
-    renderer="alpha: true; antialias: true; colorManagement: true;"
+    renderer="alpha: true; antialias: true; colorManagement: true; precision: highp;"
+    webxr="requiredFeatures: hit-test,local-floor; optionalFeatures: dom-overlay; overlayElement: #hud-container;"
   >
     <a-assets timeout="10000">
       <img id="tex-wireframe" src="./assets/layer-wireframe.png" crossorigin="anonymous" />
@@ -27,7 +28,7 @@
       <img id="tex-details" src="./assets/layer-details.png" crossorigin="anonymous" />
     </a-assets>
 
-    <!-- A câmera 3D lê o giroscópio do celular (magicWindowTrackingEnabled) -->
+    <!-- Câmera 3D -->
     <a-entity id="camera-rig" position="0 0 0">
       <a-camera
         id="ar-camera"
@@ -36,17 +37,23 @@
       ></a-camera>
     </a-entity>
 
-    <!-- ÂNCORA 3D DA PAREDE (Fica a 2.2 metros de profundidade Z = -2.2) -->
+    <!-- Mira laser no chão/parede quando no Modo WebXR 6DoF -->
+    <a-entity id="xr-reticle" visible="false">
+      <a-ring color="#00ff66" radius-inner="0.08" radius-outer="0.11" rotation="-90 0 0"></a-ring>
+      <a-circle color="#00ff66" radius="0.02" rotation="-90 0 0"></a-circle>
+    </a-entity>
+
+    <!-- ÂNCORA 3D DA PAREDE -->
     <a-entity id="wall-anchor" position="0 0 -2.2" rotation="0 0 0">
       <a-entity id="mural-rig" position="0 0 0" rotation="0 0 0" scale="1.5 1.5 1">
 
-        <!-- Grade 3D auxiliar para enxergar o plano e a perspectiva da parede -->
+        <!-- Grade de Perspectiva 3D -->
         <a-plane
           id="perspective-grid"
           position="0 0 0"
           width="1.65"
           height="1.05"
-          material="color: #00ff66; wireframe: true; segmentsWidth: 8; segmentsHeight: 5; opacity: 0.35; transparent: true"
+          material="color: #00ff66; wireframe: true; segmentsWidth: 10; segmentsHeight: 6; opacity: 0.4; transparent: true"
         ></a-plane>
 
         <!-- Layer 1: Esqueleto -->
@@ -80,12 +87,13 @@
     </a-entity>
   </a-scene>
 
-  <!-- 3. HUD DE CONTROLE 3D -->
+  <!-- 3. HUD DE CONTROLE -->
   <div id="hud-container">
     <header class="hud-top">
       <div class="top-bar-row">
-        <button id="btn-recenter-wall" class="hud-btn anchor-wall-btn">
-          🎯 CRAVAR NA PAREDE AQUI
+        <!-- Botão de Trava Absoluta (Mata 100% do Drift do Giroscópio) -->
+        <button id="btn-hard-lock" class="hud-btn lock-screen-btn">
+          🔓 GIROSCÓPIO LIVRE (TOQUE P/ TRAVAR FIXO)
         </button>
 
         <div class="top-right-tools">
@@ -98,30 +106,40 @@
         </div>
       </div>
 
+      <!-- Barra Secundária: WebXR 6DoF (SLAM Real) + Recentralizar -->
+      <div class="sub-bar-row">
+        <button id="btn-recenter-wall" class="hud-btn sub-btn">
+          🎯 Puxar Arte p/ Minha Frente
+        </button>
+        <button id="btn-start-webxr" class="hud-btn xr-btn" style="display: none;">
+          🚀 ATIVAR AR LASER (6DoF)
+        </button>
+      </div>
+
       <!-- Gaveta de Perspectiva 3D (Inclinacão da Parede + Posição) -->
       <div id="dpad-panel" class="dpad-drawer hidden">
         <div class="dpad-info">
           <span class="dpad-title">PERSPECTIVA 3D DA PAREDE</span>
-          <code id="coords-display" class="coords-readout">Yaw: 0° | Pitch: 0°</code>
+          <code id="coords-display" class="coords-readout">Y: 0° | X: 0° | Z: 0°</code>
           
           <div class="tilt-controls">
-            <button class="hud-btn tilt-btn" data-ry="-4">◀ Virar Esq</button>
-            <button class="hud-btn tilt-btn" data-ry="4">Virar Dir ▶</button>
-            <button class="hud-btn tilt-btn" data-rx="-4">▲ Inclinar Cima</button>
-            <button class="hud-btn tilt-btn" data-rx="4">▼ Inclinar Baixo</button>
-            <button class="hud-btn tilt-btn" data-rz="-2">↺ Girar -2°</button>
-            <button class="hud-btn tilt-btn" data-rz="2">↻ Girar +2°</button>
+            <button class="hud-btn tilt-btn" data-ry="-3">◀ Perspectiva Esq</button>
+            <button class="hud-btn tilt-btn" data-ry="3">Perspectiva Dir ▶</button>
+            <button class="hud-btn tilt-btn" data-rx="-3">▲ Inclinar Cima</button>
+            <button class="hud-btn tilt-btn" data-rx="3">▼ Inclinar Baixo</button>
+            <button class="hud-btn tilt-btn" data-rz="-1.5">↺ Girar -1.5°</button>
+            <button class="hud-btn tilt-btn" data-rz="1.5">↻ Girar +1.5°</button>
           </div>
 
           <button id="btn-pos-reset" class="hud-btn reset-btn">ZERAR PERSPECTIVA</button>
         </div>
 
         <div class="dpad-grid">
-          <button class="hud-btn dpad-btn up" data-dx="0" data-dy="0.06">▲</button>
-          <button class="hud-btn dpad-btn left" data-dx="-0.06" data-dy="0">◀</button>
+          <button class="hud-btn dpad-btn up" data-dx="0" data-dy="0.04">▲</button>
+          <button class="hud-btn dpad-btn left" data-dx="-0.04" data-dy="0">◀</button>
           <div class="dpad-center-dot"></div>
-          <button class="hud-btn dpad-btn right" data-dx="0.06" data-dy="0">▶</button>
-          <button class="hud-btn dpad-btn down" data-dx="0" data-dy="-0.06">▼</button>
+          <button class="hud-btn dpad-btn right" data-dx="0.04" data-dy="0">▶</button>
+          <button class="hud-btn dpad-btn down" data-dx="0" data-dy="-0.04">▼</button>
         </div>
       </div>
     </header>

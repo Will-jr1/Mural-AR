@@ -1,4 +1,7 @@
+const STORAGE_KEY = 'webar_mural_pro_3d_v1';
+
 document.addEventListener('DOMContentLoaded', () => {
+  const sceneEl = document.getElementById('main-scene');
   const videoEl = document.getElementById('camera-feed');
   const arCamera = document.getElementById('ar-camera');
   const wallAnchor = document.getElementById('wall-anchor');
@@ -11,7 +14,9 @@ document.addEventListener('DOMContentLoaded', () => {
     layerElements[id] = document.getElementById(id);
   });
 
+  const hardLockBtn = document.getElementById('btn-hard-lock');
   const recenterWallBtn = document.getElementById('btn-recenter-wall');
+  const startWebXRBtn = document.getElementById('btn-start-webxr');
   const toggleGridBtn = document.getElementById('btn-toggle-grid');
   const opacitySlider = document.getElementById('opacity-slider');
   const opacityValue = document.getElementById('opacity-value');
@@ -31,11 +36,12 @@ document.addEventListener('DOMContentLoaded', () => {
   const state = {
     globalOpacity: 0.85,
     isPeeking: false,
+    isHardLocked: false, // Quando true, mata 100% do drift do giroscópio!
     showGrid: true,
     scale: 1.0,
     baseScale: 1.5,
     pos: { x: 0, y: 0, z: 0 },
-    rot: { x: 0, y: 0, z: 0 }, // Inclinação 3D (Pitch, Yaw, Roll) para perspectiva de parede
+    rot: { x: 0, y: 0, z: 0 },
     layers: {
       'layer-wireframe': true,
       'layer-fill': true,
@@ -43,7 +49,7 @@ document.addEventListener('DOMContentLoaded', () => {
     },
   };
 
-  // 1. Inicia câmera traseira
+  // 1. Inicia câmera traseira com foco e resolução travados
   async function startCamera() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -52,14 +58,32 @@ document.addEventListener('DOMContentLoaded', () => {
       });
       videoEl.srcObject = stream;
     } catch (e) {
-      console.error('Erro câmera:', e);
+      console.error('Erro ao abrir câmera:', e);
     }
   }
 
-  // 2. Aplica Posição, Escala e Perspectiva 3D (Rotação X, Y, Z) no A-Frame
+  function saveState() {
+    try {
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ pos: state.pos, rot: state.rot, scale: state.scale })
+      );
+    } catch (e) {}
+  }
+
+  function loadState() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      const p = JSON.parse(raw);
+      if (p.pos) state.pos = p.pos;
+      if (p.rot) state.rot = p.rot;
+      if (p.scale) state.scale = p.scale;
+    } catch (e) {}
+  }
+
   function applyTransform3D() {
     if (!muralRig || !muralRig.object3D) return;
-
     muralRig.setAttribute('position', `${state.pos.x} ${state.pos.y} ${state.pos.z}`);
     muralRig.setAttribute('rotation', `${state.rot.x} ${state.rot.y} ${state.rot.z}`);
 
@@ -67,13 +91,11 @@ document.addEventListener('DOMContentLoaded', () => {
     muralRig.setAttribute('scale', `${s} ${s} 1`);
 
     scaleDisplay.textContent = `${Math.round(state.scale * 100)}%`;
-    coordsDisplay.textContent = `Perspectiva Y:${state.rot.y}° | X:${state.rot.x}°`;
+    coordsDisplay.textContent = `Y:${state.rot.y}° | X:${state.rot.x}° | Z:${state.rot.z}°`;
   }
 
-  // 3. Atualiza Opacidade das Camadas 3D
   function syncLayers3D() {
     const effectiveOpacity = state.isPeeking ? 0 : state.globalOpacity;
-
     layerIds.forEach((id) => {
       const el = layerElements[id];
       if (!el || !el.object3D) return;
@@ -94,40 +116,93 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // 4. Botão "CRAVAR NA PAREDE AQUI": Ativa Giroscópio no iOS e posiciona o mural 3D onde a câmera olha!
+  // 2. Centraliza a âncora na frente da câmera atual
+  function pullWallAnchorToFront() {
+    const camObj = arCamera.object3D;
+    const distance = 2.2;
+    const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(camObj.quaternion);
+    const targetPos = new THREE.Vector3().copy(camObj.position).add(dir.multiplyScalar(distance));
+
+    wallAnchor.object3D.position.copy(targetPos);
+    wallAnchor.object3D.lookAt(camObj.position);
+  }
+
   recenterWallBtn.addEventListener('click', async () => {
-    // No iPhone (iOS 13+), pede permissão explícita para ler o Giroscópio 3D
     if (
       typeof DeviceOrientationEvent !== 'undefined' &&
       typeof DeviceOrientationEvent.requestPermission === 'function'
     ) {
       try {
         await DeviceOrientationEvent.requestPermission();
-      } catch (e) {
-        console.warn('Permissão de giroscópio negada:', e);
-      }
+      } catch (e) {}
     }
-
-    // Pega a direção atual para onde o celular está apontando no mundo 3D
-    const camObj = arCamera.object3D;
-    const distance = 2.2; // 2.2 metros na frente da lente
-    const dir = new THREE.Vector3(0, 0, -1);
-    dir.applyQuaternion(camObj.quaternion);
-
-    const targetPos = new THREE.Vector3().copy(camObj.position).add(dir.multiplyScalar(distance));
-
-    // Coloca a âncora naquele ponto da parede e vira de frente para o usuário
-    wallAnchor.object3D.position.copy(targetPos);
-    wallAnchor.object3D.lookAt(camObj.position);
-
-    // Feedback visual no botão
-    recenterWallBtn.textContent = '✅ PAREDE TRAVADA (3D)';
-    setTimeout(() => {
-      recenterWallBtn.textContent = '🎯 CRAVAR NA PAREDE AQUI';
-    }, 1500);
+    pullWallAnchorToFront();
   });
 
-  // 5. Controles de Perspectiva 3D (Inclinacão da Parede) e D-Pad
+  // 3. BOTÃO HARD LOCK (Trava Absoluta na Tela — Zero Esbarrão / Zero Drift do Giroscópio)
+  hardLockBtn.addEventListener('click', () => {
+    state.isHardLocked = !state.isHardLocked;
+
+    if (state.isHardLocked) {
+      // Desliga a leitura do giroscópio para congelar a matriz 3D exatamente como está na tela!
+      arCamera.setAttribute('look-controls', 'magicWindowTrackingEnabled', false);
+      hardLockBtn.classList.add('locked');
+      hardLockBtn.textContent = '🔒 FIXADO 100% (ZERO DRIFT) — TOQUE P/ SOLTAR';
+    } else {
+      // Religa o giroscópio e puxa a arte para a visão atual
+      arCamera.setAttribute('look-controls', 'magicWindowTrackingEnabled', true);
+      setTimeout(pullWallAnchorToFront, 60);
+      hardLockBtn.classList.remove('locked');
+      hardLockBtn.textContent = '🔓 GIROSCÓPIO LIVRE (TOQUE P/ TRAVAR FIXO)';
+    }
+  });
+
+  // 4. Arrastar com 1 dedo direto na tela para mover o mural 3D (quando destravado)
+  let isDragging = false;
+  let lastX = 0;
+  let lastY = 0;
+
+  window.addEventListener('pointerdown', (e) => {
+    // Ignora se clicou nos botões do HUD
+    if (e.target.closest('.hud-top') || e.target.closest('.hud-bottom')) return;
+    if (state.isHardLocked) return;
+    isDragging = true;
+    lastX = e.clientX;
+    lastY = e.clientY;
+  });
+
+  window.addEventListener('pointermove', (e) => {
+    if (!isDragging || state.isHardLocked) return;
+    const dx = (e.clientX - lastX) * 0.0035;
+    const dy = (lastY - e.clientY) * 0.0035;
+    lastX = e.clientX;
+    lastY = e.clientY;
+
+    state.pos.x = +(state.pos.x + dx).toFixed(3);
+    state.pos.y = +(state.pos.y + dy).toFixed(3);
+    applyTransform3D();
+  });
+
+  window.addEventListener('pointerup', () => {
+    if (isDragging) {
+      isDragging = false;
+      saveState();
+    }
+  });
+
+  // 5. Verifica se o celular suporta WebXR Nativo 6DoF (ARCore no Android Chrome)
+  if (navigator.xr && navigator.xr.isSessionSupported) {
+    navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
+      if (supported) {
+        startWebXRBtn.style.display = 'block';
+        startWebXRBtn.addEventListener('click', () => {
+          sceneEl.enterAR();
+        });
+      }
+    });
+  }
+
+  // 6. Controles de Perspectiva 3D (Tilt X, Y, Z) e D-Pad
   toggleDpadBtn.addEventListener('click', () => {
     const isHidden = dpadPanel.classList.toggle('hidden');
     toggleDpadBtn.classList.toggle('active', !isHidden);
@@ -137,9 +212,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const dx = parseFloat(btn.getAttribute('data-dx')) || 0;
     const dy = parseFloat(btn.getAttribute('data-dy')) || 0;
     btn.addEventListener('click', () => {
-      state.pos.x = +(state.pos.x + dx).toFixed(2);
-      state.pos.y = +(state.pos.y + dy).toFixed(2);
+      state.pos.x = +(state.pos.x + dx).toFixed(3);
+      state.pos.y = +(state.pos.y + dy).toFixed(3);
       applyTransform3D();
+      saveState();
     });
   });
 
@@ -148,10 +224,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const ry = parseFloat(btn.getAttribute('data-ry')) || 0;
     const rz = parseFloat(btn.getAttribute('data-rz')) || 0;
     btn.addEventListener('click', () => {
-      state.rot.x += rx;
-      state.rot.y += ry;
-      state.rot.z += rz;
+      state.rot.x = +(state.rot.x + rx).toFixed(1);
+      state.rot.y = +(state.rot.y + ry).toFixed(1);
+      state.rot.z = +(state.rot.z + rz).toFixed(1);
       applyTransform3D();
+      saveState();
     });
   });
 
@@ -159,10 +236,11 @@ document.addEventListener('DOMContentLoaded', () => {
     state.pos = { x: 0, y: 0, z: 0 };
     state.rot = { x: 0, y: 0, z: 0 };
     state.scale = 1.0;
+    localStorage.removeItem(STORAGE_KEY);
     applyTransform3D();
   });
 
-  // 6. Grid 3D Auxiliar (ajuda muito a alinhar as bordas com o teto e chão da parede)
+  // 7. Grid, Camadas, Opacidade, Peek e Escala
   toggleGridBtn.addEventListener('click', () => {
     state.showGrid = !state.showGrid;
     toggleGridBtn.classList.toggle('active', state.showGrid);
@@ -170,7 +248,6 @@ document.addEventListener('DOMContentLoaded', () => {
     syncLayers3D();
   });
 
-  // 7. Camadas, Opacidade, Peek e Escala
   layerButtons.forEach((btn) => {
     btn.addEventListener('click', () => {
       const id = btn.getAttribute('data-layer');
@@ -204,15 +281,18 @@ document.addEventListener('DOMContentLoaded', () => {
   window.addEventListener('pointercancel', endPeek);
 
   scaleUpBtn.addEventListener('click', () => {
-    state.scale = Math.min(3.5, +(state.scale + 0.08).toFixed(2));
+    state.scale = Math.min(4.0, +(state.scale + 0.08).toFixed(2));
     applyTransform3D();
+    saveState();
   });
   scaleDownBtn.addEventListener('click', () => {
-    state.scale = Math.max(0.25, +(state.scale - 0.08).toFixed(2));
+    state.scale = Math.max(0.2, +(state.scale - 0.08).toFixed(2));
     applyTransform3D();
+    saveState();
   });
 
   muralRig.addEventListener('loaded', () => {
+    loadState();
     applyTransform3D();
     syncLayers3D();
   });
