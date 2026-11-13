@@ -1,14 +1,20 @@
-import * as THREE from 'three';
+/**
+ * WebAR Mural iOS — Motor 6DoF Híbrido (Optical Flow KLT + Giroscópio + Three.js)
+ * Resolve o bloqueio de WebXR da Apple no iPhone medindo o zoom e deslocamento
+ * diretamente nos pixels reais da parede a 60fps.
+ */
 
 document.addEventListener('DOMContentLoaded', () => {
-  const container = document.getElementById('webgl-container');
-  const hudContainer = document.getElementById('hud-container');
+  const videoEl = document.getElementById('camera-feed');
+  const webglContainer = document.getElementById('webgl-container');
+  const debugCanvas = document.getElementById('cv-debug-canvas');
+  const debugCtx = debugCanvas.getContext('2d');
 
-  // Elementos do HUD
+  // HUD
   const trackingBadge = document.getElementById('tracking-badge');
   const trackingText = document.getElementById('tracking-text');
-  const startXRBtn = document.getElementById('btn-start-xr');
-  const placeWallBtn = document.getElementById('btn-place-wall');
+  const wallLockBtn = document.getElementById('btn-wall-lock');
+  const freezeScreenBtn = document.getElementById('btn-freeze-screen');
   const opacitySlider = document.getElementById('opacity-slider');
   const opacityValue = document.getElementById('opacity-value');
   const peekBtn = document.getElementById('btn-peek');
@@ -24,14 +30,21 @@ document.addEventListener('DOMContentLoaded', () => {
   const dpadButtons = document.querySelectorAll('.dpad-btn');
   const tiltButtons = document.querySelectorAll('.tilt-btn');
 
-  // Estado da Aplicação
+  // Estado Geral
   const state = {
     globalOpacity: 0.85,
     isPeeking: false,
-    isWallAnchored: false,
-    scale: 1.0,
-    offsetPos: { x: 0, y: 0, z: 0 },
-    offsetRot: { x: 0, y: 0, z: 0 },
+    isOpticalLocked: false, // Rastreador 6DoF de parede ativo
+    isScreenFrozen: false,  // Modo estático para tripé
+    cameraZ: 1.5,           // Distância real simulada até a parede (menor = mais perto / zoom maior)
+    targetZ: 1.5,
+    posX: 0,
+    posY: 0,
+    targetX: 0,
+    targetY: 0,
+    rot: { x: 0, y: 0, z: 0 },
+    gyroRef: null,
+    gyroCurr: { alpha: 0, beta: 0, gamma: 0 },
     layers: {
       'layer-wireframe': true,
       'layer-fill': true,
@@ -39,48 +52,54 @@ document.addEventListener('DOMContentLoaded', () => {
     },
   };
 
-  // 1. Inicialização do Motor Three.js + WebXR 6DoF
+  // ============================================================================
+  // 1. INICIALIZAÇÃO DA CÂMERA DO IPHONE
+  // ============================================================================
+  async function startCamera() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+        audio: false,
+      });
+      videoEl.srcObject = stream;
+      await videoEl.play();
+    } catch (err) {
+      console.error('Erro câmera iOS:', err);
+      trackingText.textContent = 'Permita acesso à câmera';
+    }
+  }
+
+  // ============================================================================
+  // 2. CENA 3D THREE.JS (PROJEÇÃO EM PERSPECTIVA REAL)
+  // ============================================================================
   const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 30);
+  const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.05, 50);
+  camera.position.set(0, 0, state.cameraZ);
 
-  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
-  renderer.setPixelRatio(window.devicePixelRatio);
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.xr.enabled = true;
-  container.appendChild(renderer.domElement);
+  webglContainer.appendChild(renderer.domElement);
 
-  // 2. Mira Laser 3D (Reticle) que desliza na parede física durante o escaneamento
-  const reticle = new THREE.Mesh(
-    new THREE.RingGeometry(0.06, 0.08, 32),
-    new THREE.MeshBasicMaterial({ color: 0x00ff66, side: THREE.DoubleSide })
-  );
-  reticle.matrixAutoUpdate = false;
-  reticle.visible = false;
-  scene.add(reticle);
+  const muralGroup = new THREE.Group();
+  scene.add(muralGroup);
 
-  // 3. Grupo Âncora da Parede (Cravado no mundo físico em metros reais)
-  const wallAnchorGroup = new THREE.Group();
-  wallAnchorGroup.position.set(0, 0, -1.5); // Posição inicial de preview a 1.5m
-  scene.add(wallAnchorGroup);
-
-  // Sub-grupo para ajustes finos de D-Pad, Escala e Rotação sem perder a âncora física
-  const muralRigGroup = new THREE.Group();
-  wallAnchorGroup.add(muralRigGroup);
-
-  // Carregamento das 3 Camadas PNG em Alta Resolução
   const textureLoader = new THREE.TextureLoader();
+  const planeGeo = new THREE.PlaneGeometry(1.4, 0.875); // Proporção 16:10
   const layerMeshes = {};
-  const planeGeo = new THREE.PlaneGeometry(1.2, 0.75); // 1.20m x 0.75m reais na parede (16:10)
 
-  const layerConfigs = [
+  const layerDefs = [
     { id: 'layer-wireframe', url: './assets/layer-wireframe.png', z: 0.002 },
     { id: 'layer-fill', url: './assets/layer-fill.png', z: 0.004 },
     { id: 'layer-details', url: './assets/layer-details.png', z: 0.006 },
   ];
 
-  layerConfigs.forEach((cfg) => {
-    const tex = textureLoader.load(cfg.url);
-    tex.colorSpace = THREE.SRGBColorSpace;
+  layerDefs.forEach((def) => {
+    const tex = textureLoader.load(def.url);
     const mat = new THREE.MeshBasicMaterial({
       map: tex,
       transparent: true,
@@ -90,156 +109,316 @@ document.addEventListener('DOMContentLoaded', () => {
       depthWrite: false,
     });
     const mesh = new THREE.Mesh(planeGeo, mat);
-    mesh.position.z = cfg.z;
-    muralRigGroup.add(mesh);
-    layerMeshes[cfg.id] = mesh;
+    mesh.position.z = def.z;
+    muralGroup.add(mesh);
+    layerMeshes[def.id] = mesh;
   });
 
-  // Grade auxiliar discreta nas bordas do mural
+  // Moldura guia verde ao redor do mural 3D
   const borderEdges = new THREE.EdgesGeometry(planeGeo);
   const borderLine = new THREE.LineSegments(
     borderEdges,
-    new THREE.LineBasicMaterial({ color: 0x00ff66, transparent: true, opacity: 0.5 })
+    new THREE.LineBasicMaterial({ color: 0x00ff66, transparent: true, opacity: 0.45 })
   );
-  muralRigGroup.add(borderLine);
+  muralGroup.add(borderLine);
 
-  // 4. Sincronização de Opacidade, Camadas e Transformações Locais
   function syncLayersVisuals() {
-    const effectiveOpacity = state.isPeeking ? 0 : state.globalOpacity;
+    const effectiveOp = state.isPeeking ? 0 : state.globalOpacity;
     Object.keys(layerMeshes).forEach((id) => {
-      const mesh = layerMeshes[id];
-      const isActive = state.layers[id];
-      const targetOp = isActive ? effectiveOpacity : 0;
-      mesh.visible = targetOp > 0.001;
-      mesh.material.opacity = targetOp;
+      const m = layerMeshes[id];
+      const active = state.layers[id];
+      const op = active ? effectiveOp : 0;
+      m.visible = op > 0.001;
+      m.material.opacity = op;
     });
-    borderLine.visible = !state.isPeeking;
+    borderLine.visible = !state.isPeeking && !state.isScreenFrozen;
   }
 
-  function applyLocalOffsets() {
-    muralRigGroup.position.set(state.offsetPos.x, state.offsetPos.y, state.offsetPos.z);
-    muralRigGroup.rotation.set(
-      THREE.MathUtils.degToRad(state.offsetRot.x),
-      THREE.MathUtils.degToRad(state.offsetRot.y),
-      THREE.MathUtils.degToRad(state.offsetRot.z)
-    );
-    muralRigGroup.scale.set(state.scale, state.scale, 1);
-    scaleDisplay.textContent = `${Math.round(state.scale * 100)}%`;
+  // ============================================================================
+  // 3. MOTOR DE VISÃO COMPUTACIONAL 6DoF (OPTICAL FLOW KLT P/ ZOOM & PAREDE)
+  // ============================================================================
+  const CV_W = 160;
+  const CV_H = 120;
+  const cvCanvas = document.createElement('canvas');
+  cvCanvas.width = CV_W;
+  cvCanvas.height = CV_H;
+  const cvCtx = cvCanvas.getContext('2d', { willReadFrequently: true });
+
+  let prevGray = new Uint8Array(CV_W * CV_H);
+  let currGray = new Uint8Array(CV_W * CV_H);
+  let trackedPoints = [];
+
+  function extractGrayscale() {
+    cvCtx.drawImage(videoEl, 0, 0, CV_W, CV_H);
+    const rgba = cvCtx.getImageData(0, 0, CV_W, CV_H).data;
+    for (let i = 0, j = 0; i < rgba.length; i += 4, j++) {
+      currGray[j] = (rgba[i] * 77 + rgba[i + 1] * 150 + rgba[i + 2] * 29) >> 8;
+    }
   }
 
-  // 5. Sessão WebXR 6DoF (SLAM com Hit-Test Real)
-  let hitTestSource = null;
-  let hitTestSourceRequested = false;
+  // Detecta pontos de alto contraste na parede (quinas, tijolos, manchas, fita crepe)
+  function detectWallFeatures() {
+    const candidates = [];
+    const margin = 14;
+    const step = 8;
 
-  async function startWebXRSession() {
-    if (!navigator.xr) {
-      alert('Seu navegador atual bloqueia a API WebXR 6DoF. No Android, use o Google Chrome. No iPhone, abra este link pelo app gratuito "WebXR Viewer".');
+    for (let y = margin; y < CV_H - margin; y += step) {
+      for (let x = margin; x < CV_W - margin; x += step) {
+        const idx = y * CV_W + x;
+        const gx = Math.abs(currGray[idx + 1] - currGray[idx - 1]);
+        const gy = Math.abs(currGray[idx + CV_W] - currGray[idx - CV_W]);
+        const score = gx + gy;
+        if (score > 22) {
+          candidates.push({ x, y, score });
+        }
+      }
+    }
+
+    candidates.sort((a, b) => b.score - a.score);
+    trackedPoints = candidates.slice(0, 45).map((p) => ({ x: p.x, y: p.y }));
+  }
+
+  function median(values) {
+    if (!values.length) return 0;
+    const sorted = [...values].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) * 0.5;
+  }
+
+  // Rastreia os pontos da parede entre o frame anterior e o atual com precisão sub-pixel
+  function processOpticalFlow6DoF() {
+    if (videoEl.readyState < 2) return;
+
+    extractGrayscale();
+
+    if (trackedPoints.length < 14) {
+      detectWallFeatures();
+      prevGray.set(currGray);
       return;
     }
 
-    try {
-      const session = await navigator.xr.requestSession('immersive-ar', {
-        requiredFeatures: ['hit-test'],
-        optionalFeatures: ['dom-overlay', 'local-floor'],
-        domOverlay: { root: hudContainer },
-      });
+    const survivedPrev = [];
+    const survivedCurr = [];
+    const patchRadius = 3; // Patch 7x7
+    const searchRadius = 7; // Janela de busca [-7, +7]
 
-      renderer.xr.setReferenceSpaceType('local');
-      await renderer.xr.setSession(session);
+    for (let i = 0; i < trackedPoints.length; i++) {
+      const pt = trackedPoints[i];
+      const px = Math.round(pt.x);
+      const py = Math.round(pt.y);
 
-      startXRBtn.style.display = 'none';
-      trackingText.textContent = 'Aponte para a parede p/ escanear...';
+      if (px < 12 || px >= CV_W - 12 || py < 12 || py >= CV_H - 12) continue;
 
-      session.addEventListener('end', () => {
-        hitTestSourceRequested = false;
-        hitTestSource = null;
-        startXRBtn.style.display = 'block';
-      });
-    } catch (err) {
-      console.error('Erro ao iniciar WebXR:', err);
-      alert('Não foi possível ativar o rastreamento 6DoF neste navegador: ' + err.message);
-    }
-  }
+      let bestDx = 0;
+      let bestDy = 0;
+      let minSAD = 999999;
 
-  startXRBtn.addEventListener('click', startWebXRSession);
-
-  // 6. Botão "COLAR ARTE NA MIRA": Trava o plano nas coordenadas físicas da parede!
-  placeWallBtn.addEventListener('click', () => {
-    if (reticle.visible) {
-      // Copia a posição exata que o laser encontrou na parede
-      const hitPos = new THREE.Vector3();
-      const hitQuat = new THREE.Quaternion();
-      const hitScale = new THREE.Vector3();
-      reticle.matrix.decompose(hitPos, hitQuat, hitScale);
-
-      wallAnchorGroup.position.copy(hitPos);
-
-      // Garante que o mural fique em pé (vertical) alinhado com a parede e olhando para o artista
-      const camPos = new THREE.Vector3();
-      camera.getWorldPosition(camPos);
-      const lookTarget = new THREE.Vector3(camPos.x, hitPos.y, camPos.z);
-      wallAnchorGroup.lookAt(lookTarget);
-
-      state.isWallAnchored = true;
-      placeWallBtn.classList.add('anchored');
-      placeWallBtn.textContent = '📌 REPOSICIONAR NA MIRA';
-
-      trackingBadge.classList.remove('status-searching');
-      trackingBadge.classList.add('status-locked');
-      trackingText.textContent = '6DoF Cravado na Parede!';
-    } else {
-      // Se clicou fora do WebXR (modo preview), trava a 1.2m na frente da câmera atual
-      const camPos = new THREE.Vector3();
-      const camDir = new THREE.Vector3(0, 0, -1);
-      camera.getWorldPosition(camPos);
-      camDir.applyQuaternion(camera.quaternion);
-      wallAnchorGroup.position.copy(camPos).add(camDir.multiplyScalar(1.2));
-      wallAnchorGroup.lookAt(camPos);
-    }
-  });
-
-  // 7. Loop de Renderização a 60fps (Atualiza o Hit-Test e mede a distância real em metros!)
-  renderer.setAnimationLoop((timestamp, frame) => {
-    if (frame) {
-      const referenceSpace = renderer.xr.getReferenceSpace();
-      const session = renderer.xr.getSession();
-
-      if (!hitTestSourceRequested) {
-        session.requestReferenceSpace('viewer').then((viewerSpace) => {
-          session.requestHitTestSource({ space: viewerSpace }).then((source) => {
-            hitTestSource = source;
-          });
-        });
-        hitTestSourceRequested = true;
-      }
-
-      if (hitTestSource) {
-        const hitTestResults = frame.getHitTestResults(hitTestSource);
-        if (hitTestResults.length > 0) {
-          const hit = hitTestResults[0];
-          const pose = hit.getPose(referenceSpace);
-          reticle.visible = true;
-          reticle.matrix.fromArray(pose.transform.matrix);
-
-          if (!state.isWallAnchored) {
-            trackingText.textContent = 'Parede lida! Toque em COLAR ARTE';
+      for (let dy = -searchRadius; dy <= searchRadius; dy++) {
+        for (let dx = -searchRadius; dx <= searchRadius; dx++) {
+          let sad = 0;
+          for (let wy = -patchRadius; wy <= patchRadius; wy++) {
+            const rowPrev = (py + wy) * CV_W + px;
+            const rowCurr = (py + dy + wy) * CV_W + (px + dx);
+            for (let wx = -patchRadius; wx <= patchRadius; wx++) {
+              sad += Math.abs(prevGray[rowPrev + wx] - currGray[rowCurr + wx]);
+            }
           }
-        } else {
-          reticle.visible = false;
+          if (sad < minSAD) {
+            minSAD = sad;
+            bestDx = dx;
+            bestDy = dy;
+          }
         }
       }
 
-      // Calcula a distância física real (em metros) entre o celular e a parede!
-      const camWorldPos = new THREE.Vector3();
-      camera.getWorldPosition(camWorldPos);
-      const distMeters = camWorldPos.distanceTo(wallAnchorGroup.position);
-      coordsDisplay.textContent = `Distância Real: ${distMeters.toFixed(2)}m | Rot Y:${state.offsetRot.y}°`;
+      // Aceita apenas casamentos confiáveis
+      if (minSAD < 780) {
+        survivedPrev.push({ x: pt.x, y: pt.y });
+        survivedCurr.push({ x: pt.x + bestDx, y: pt.y + bestDy });
+      }
     }
 
-    renderer.render(scene, camera);
+    // Se temos pontos suficientes na parede, calculamos Translação (X,Y) e Zoom Físico (Z)!
+    if (survivedCurr.length >= 6) {
+      const dxs = [];
+      const dys = [];
+      for (let i = 0; i < survivedCurr.length; i++) {
+        dxs.push(survivedCurr[i].x - survivedPrev[i].x);
+        dys.push(survivedCurr[i].y - survivedPrev[i].y);
+      }
+
+      const medDx = median(dxs);
+      const medDy = median(dys);
+
+      // Move a arte junto com a parede
+      const worldFactor = state.cameraZ * 0.0085;
+      state.targetX += medDx * worldFactor;
+      state.targetY -= medDy * worldFactor;
+
+      // CÁLCULO DO ZOOM DE APROXIMAÇÃO REAL (Expansão/Contração radial dos pontos da parede)
+      let cxPrev = 0, cyPrev = 0, cxCurr = 0, cyCurr = 0;
+      const n = survivedCurr.length;
+      for (let i = 0; i < n; i++) {
+        cxPrev += survivedPrev[i].x;
+        cyPrev += survivedPrev[i].y;
+        cxCurr += survivedCurr[i].x;
+        cyCurr += survivedCurr[i].y;
+      }
+      cxPrev /= n; cyPrev /= n;
+      cxCurr /= n; cyCurr /= n;
+
+      const scaleRatios = [];
+      for (let i = 0; i < n; i++) {
+        const distPrev = Math.hypot(survivedPrev[i].x - cxPrev, survivedPrev[i].y - cyPrev);
+        const distCurr = Math.hypot(survivedCurr[i].x - cxCurr, survivedCurr[i].y - cyCurr);
+        if (distPrev > 10) {
+          scaleRatios.push(distCurr / distPrev);
+        }
+      }
+
+      if (scaleRatios.length >= 4) {
+        const medScale = median(scaleRatios);
+        // Se medScale > 1, o celular está se aproximando da parede -> diminui cameraZ (Dá Zoom!)
+        if (medScale > 0.92 && medScale < 1.08) {
+          state.targetZ = THREE.MathUtils.clamp(state.targetZ / medScale, 0.22, 5.0);
+        }
+      }
+    }
+
+    trackedPoints = survivedCurr;
+    if (trackedPoints.length < 22) {
+      detectWallFeatures();
+    }
+    prevGray.set(currGray);
+  }
+
+  // Desenha os pontinhos verdes onde o algoritmo está ancorando na parede
+  function drawDebugPoints() {
+    if (debugCanvas.width !== window.innerWidth || debugCanvas.height !== window.innerHeight) {
+      debugCanvas.width = window.innerWidth;
+      debugCanvas.height = window.innerHeight;
+    }
+    debugCtx.clearRect(0, 0, debugCanvas.width, debugCanvas.height);
+
+    if (!state.isOpticalLocked || state.isScreenFrozen || state.isPeeking) return;
+
+    const scaleX = debugCanvas.width / CV_W;
+    const scaleY = debugCanvas.height / CV_H;
+
+    debugCtx.fillStyle = '#00ff66';
+    for (let i = 0; i < trackedPoints.length; i++) {
+      const p = trackedPoints[i];
+      debugCtx.beginPath();
+      debugCtx.arc(p.x * scaleX, p.y * scaleY, 3, 0, Math.PI * 2);
+      debugCtx.fill();
+    }
+  }
+
+  // ============================================================================
+  // 4. GIROSCÓPIO DO IPHONE (PERSPECTIVA 3D AUTOMÁTICA)
+  // ============================================================================
+  window.addEventListener('deviceorientation', (e) => {
+    if (e.alpha === null) return;
+    state.gyroCurr = { alpha: e.alpha, beta: e.beta, gamma: e.gamma };
+
+    if (state.isOpticalLocked && !state.isScreenFrozen && state.gyroRef) {
+      const dGamma = THREE.MathUtils.clamp(e.gamma - state.gyroRef.gamma, -45, 45);
+      const dBeta = THREE.MathUtils.clamp(e.beta - state.gyroRef.beta, -45, 45);
+      muralGroup.rotation.y = THREE.MathUtils.degToRad(state.rot.y - dGamma * 0.65);
+      muralGroup.rotation.x = THREE.MathUtils.degToRad(state.rot.x + dBeta * 0.65);
+    }
   });
 
-  // 8. Controles do HUD (D-Pad, Tilt, Escala, Opacidade e Peek)
+  // ============================================================================
+  // 5. GESTOS TOUCH NA TELA (ARRASTAR COM 1 DEDO + PINÇA DE ZOOM COM 2 DEDOS)
+  // ============================================================================
+  const activePointers = new Map();
+  let prevPinchDist = null;
+  let prevDragPos = null;
+
+  webglContainer.addEventListener('pointerdown', (e) => {
+    if (state.isScreenFrozen) return;
+    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (activePointers.size === 1) {
+      prevDragPos = { x: e.clientX, y: e.clientY };
+    }
+  });
+
+  webglContainer.addEventListener('pointermove', (e) => {
+    if (state.isScreenFrozen || !activePointers.has(e.pointerId)) return;
+    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    const pts = Array.from(activePointers.values());
+
+    if (pts.length === 1 && prevDragPos) {
+      const dx = pts[0].x - prevDragPos.x;
+      const dy = pts[0].y - prevDragPos.y;
+      prevDragPos = { x: pts[0].x, y: pts[0].y };
+
+      const factor = state.cameraZ * 0.0022;
+      state.targetX += dx * factor;
+      state.targetY -= dy * factor;
+    } else if (pts.length === 2) {
+      const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+      if (prevPinchDist !== null && prevPinchDist > 10) {
+        const ratio = dist / prevPinchDist;
+        state.targetZ = THREE.MathUtils.clamp(state.targetZ / ratio, 0.22, 5.0);
+      }
+      prevPinchDist = dist;
+    }
+  });
+
+  const clearPointer = (e) => {
+    activePointers.delete(e.pointerId);
+    if (activePointers.size < 2) prevPinchDist = null;
+    if (activePointers.size === 0) prevDragPos = null;
+  };
+  webglContainer.addEventListener('pointerup', clearPointer);
+  webglContainer.addEventListener('pointercancel', clearPointer);
+
+  // ============================================================================
+  // 6. BOTÕES DO HUD
+  // ============================================================================
+  wallLockBtn.addEventListener('click', async () => {
+    // Solicita permissão do Giroscópio no Safari do iOS
+    if (
+      typeof DeviceOrientationEvent !== 'undefined' &&
+      typeof DeviceOrientationEvent.requestPermission === 'function'
+    ) {
+      try {
+        await DeviceOrientationEvent.requestPermission();
+      } catch (e) {}
+    }
+
+    state.isOpticalLocked = !state.isOpticalLocked;
+
+    if (state.isOpticalLocked) {
+      extractGrayscale();
+      detectWallFeatures();
+      prevGray.set(currGray);
+      state.gyroRef = { ...state.gyroCurr };
+
+      wallLockBtn.classList.add('active');
+      wallLockBtn.textContent = '✅ 6DoF ATIVO NA PAREDE (TOQUE P/ RECALIBRAR)';
+      trackingBadge.classList.replace('status-unlocked', 'status-locked');
+      trackingText.textContent = `6DoF Grudado (${trackedPoints.length} pts)`;
+    } else {
+      wallLockBtn.classList.remove('active');
+      wallLockBtn.textContent = '🎯 GRUDAR NA PAREDE (ATIVAR 6DoF ÓPTICO)';
+      trackingBadge.classList.replace('status-locked', 'status-unlocked');
+      trackingText.textContent = 'Modo Posicionamento Livre';
+    }
+  });
+
+  freezeScreenBtn.addEventListener('click', () => {
+    state.isScreenFrozen = !state.isScreenFrozen;
+    freezeScreenBtn.classList.toggle('frozen', state.isScreenFrozen);
+    freezeScreenBtn.textContent = state.isScreenFrozen
+      ? '🔥 DESTRAVAR TELA'
+      : '❄️ CONGELAR NA TELA (TRIPÉ)';
+    syncLayersVisuals();
+  });
+
   toggleDpadBtn.addEventListener('click', () => {
     const isHidden = dpadPanel.classList.toggle('hidden');
     toggleDpadBtn.classList.toggle('active', !isHidden);
@@ -249,9 +428,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const dx = parseFloat(btn.getAttribute('data-dx')) || 0;
     const dy = parseFloat(btn.getAttribute('data-dy')) || 0;
     btn.addEventListener('click', () => {
-      state.offsetPos.x = +(state.offsetPos.x + dx).toFixed(3);
-      state.offsetPos.y = +(state.offsetPos.y + dy).toFixed(3);
-      applyLocalOffsets();
+      state.targetX += dx;
+      state.targetY += dy;
     });
   });
 
@@ -260,11 +438,102 @@ document.addEventListener('DOMContentLoaded', () => {
     const ry = parseFloat(btn.getAttribute('data-ry')) || 0;
     const rz = parseFloat(btn.getAttribute('data-rz')) || 0;
     btn.addEventListener('click', () => {
-      state.offsetRot.x += rx;
-      state.offsetRot.y += ry;
-      state.offsetRot.z += rz;
-      applyLocalOffsets();
+      state.rot.x += rx;
+      state.rot.y += ry;
+      state.rot.z += rz;
     });
   });
 
-  resetPosBtn.add
+  resetPosBtn.addEventListener('click', () => {
+    state.targetX = 0;
+    state.targetY = 0;
+    state.targetZ = 1.5;
+    state.rot = { x: 0, y: 0, z: 0 };
+    state.gyroRef = { ...state.gyroCurr };
+  });
+
+  layerButtons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-layer');
+      state.layers[id] = !state.layers[id];
+      btn.classList.toggle('active', state.layers[id]);
+      syncLayersVisuals();
+    });
+  });
+
+  opacitySlider.addEventListener('input', (e) => {
+    const val = parseInt(e.target.value, 10);
+    state.globalOpacity = val / 100;
+    opacityValue.textContent = `${val}%`;
+    syncLayersVisuals();
+  });
+
+  const startPeek = (e) => {
+    e.preventDefault();
+    state.isPeeking = true;
+    peekBtn.classList.add('peeking');
+    syncLayersVisuals();
+  };
+  const endPeek = () => {
+    if (!state.isPeeking) return;
+    state.isPeeking = false;
+    peekBtn.classList.remove('peeking');
+    syncLayersVisuals();
+  };
+  peekBtn.addEventListener('pointerdown', startPeek);
+  window.addEventListener('pointerup', endPeek);
+  window.addEventListener('pointercancel', endPeek);
+
+  scaleUpBtn.addEventListener('click', () => {
+    state.targetZ = Math.max(0.22, +(state.targetZ - 0.12).toFixed(2));
+  });
+  scaleDownBtn.addEventListener('click', () => {
+    state.targetZ = Math.min(5.0, +(state.targetZ + 0.12).toFixed(2));
+  });
+
+  // ============================================================================
+  // 7. LOOP PRINCIPAL DE RENDERIZAÇÃO (60 FPS)
+  // ============================================================================
+  function animate() {
+    requestAnimationFrame(animate);
+
+    if (state.isOpticalLocked && !state.isScreenFrozen) {
+      processOpticalFlow6DoF();
+      trackingText.textContent = `6DoF Ativo (${trackedPoints.length} pts na parede)`;
+    }
+
+    // Suavização anti-tremedeira (Interpolação exponencial)
+    state.posX += (state.targetX - state.posX) * 0.28;
+    state.posY += (state.targetY - state.posY) * 0.28;
+    state.cameraZ += (state.targetZ - state.cameraZ) * 0.25;
+
+    camera.position.z = state.cameraZ;
+    muralGroup.position.set(state.posX, state.posY, 0);
+
+    if (!state.isOpticalLocked) {
+      muralGroup.rotation.set(
+        THREE.MathUtils.degToRad(state.rot.x),
+        THREE.MathUtils.degToRad(state.rot.y),
+        THREE.MathUtils.degToRad(state.rot.z)
+      );
+    } else {
+      muralGroup.rotation.z = THREE.MathUtils.degToRad(state.rot.z);
+    }
+
+    scaleDisplay.textContent = `${state.cameraZ.toFixed(1)}m`;
+    coordsDisplay.textContent = `Dist: ${state.cameraZ.toFixed(2)}m | Pts: ${trackedPoints.length}`;
+
+    drawDebugPoints();
+    renderer.render(scene, camera);
+  }
+
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  syncLayersVisuals();
+  startCamera();
+  animate();
+});

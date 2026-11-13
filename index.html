@@ -3,79 +3,79 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-  <title>WebAR Mural 6DoF — Three.js + WebXR</title>
+  <title>WebAR Mural iOS — 6DoF Optical Flow</title>
   <link rel="stylesheet" href="style.css" />
 
-  <!-- Import Map oficial do Three.js r160 -->
-  <script type="importmap">
-    {
-      "imports": {
-        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
-      }
-    }
-  </script>
+  <!-- Three.js compatível com 100% dos iPhones (Safari / Chrome iOS) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 </head>
 <body>
 
-  <!-- Container onde o Three.js/WebXR vai injetar o Canvas 3D -->
+  <!-- 1. CÂMERA DO IPHONE AO VIVO NO FUNDO -->
+  <video id="camera-feed" autoplay playsinline muted></video>
+
+  <!-- 2. CANVAS 3D DO THREE.JS (ARTE EM PERSPECTIVA E ZOOM) -->
   <div id="webgl-container"></div>
 
-  <!-- HUD que flutua por cima da sessão WebXR (via dom-overlay) -->
+  <!-- 3. CANVAS DE DEBUG DOS PONTOS RASTREADOS NA PAREDE -->
+  <canvas id="cv-debug-canvas"></canvas>
+
+  <!-- 4. HUD DE CONTROLE -->
   <div id="hud-container">
     <header class="hud-top">
       <div class="top-bar-row">
-        <div id="tracking-badge" class="status-badge status-searching">
+        <div id="tracking-badge" class="status-badge status-unlocked">
           <span class="status-dot"></span>
-          <span id="tracking-text">Aguardando Sensor 6DoF...</span>
+          <span id="tracking-text">Modo Posicionamento Livre</span>
         </div>
 
         <div class="top-right-tools">
-          <button id="btn-toggle-dpad" class="hud-btn tool-toggle-btn">AJUSTE FINO</button>
+          <button id="btn-toggle-dpad" class="hud-btn tool-toggle-btn">3D / TILT</button>
           <div class="scale-controls">
             <button id="btn-scale-down" class="hud-btn icon-btn">−</button>
-            <span id="scale-display" class="scale-readout">100%</span>
+            <span id="scale-display" class="scale-readout">1.5m</span>
             <button id="btn-scale-up" class="hud-btn icon-btn">+</button>
           </div>
         </div>
       </div>
 
-      <!-- Botão Principal para Iniciar o Sensor 6DoF Real (SLAM) -->
-      <button id="btn-start-xr" class="hud-btn start-xr-btn">
-        🚀 INICIAR RASTREAMENTO 6DoF (PAREDE REAL)
+      <!-- Botão Principal: Liga o Rastreador Óptico de Parede + Giroscópio no iPhone -->
+      <button id="btn-wall-lock" class="hud-btn wall-lock-btn">
+        🎯 GRUDAR NA PAREDE (ATIVAR 6DoF ÓPTICO)
       </button>
 
-      <!-- Gaveta de Ajuste Fino (Offset Local + Inclinação da Parede) -->
+      <!-- Gaveta de Perspectiva 3D (Inclinação da Parede + Posição) -->
       <div id="dpad-panel" class="dpad-drawer hidden">
         <div class="dpad-info">
-          <span class="dpad-title">AJUSTE FINO NA PAREDE</span>
-          <code id="coords-display" class="coords-readout">Dist Z: 0.00m | Rot: 0°</code>
+          <span class="dpad-title">PERSPECTIVA 3D & DISTÂNCIA</span>
+          <code id="coords-display" class="coords-readout">Dist: 1.50m | Pts: 0</code>
           
           <div class="tilt-controls">
-            <button class="hud-btn tilt-btn" data-ry="-2">◀ Virar Esq</button>
-            <button class="hud-btn tilt-btn" data-ry="2">Virar Dir ▶</button>
-            <button class="hud-btn tilt-btn" data-rx="-2">▲ Inclinar Cima</button>
-            <button class="hud-btn tilt-btn" data-rx="2">▼ Inclinar Baixo</button>
-            <button class="hud-btn tilt-btn" data-rz="-1">↺ Girar -1°</button>
-            <button class="hud-btn tilt-btn" data-rz="1">↻ Girar +1°</button>
+            <button class="hud-btn tilt-btn" data-ry="-3">◀ Virar Esq</button>
+            <button class="hud-btn tilt-btn" data-ry="3">Virar Dir ▶</button>
+            <button class="hud-btn tilt-btn" data-rx="-3">▲ Inclinar Cima</button>
+            <button class="hud-btn tilt-btn" data-rx="3">▼ Inclinar Baixo</button>
+            <button class="hud-btn tilt-btn" data-rz="-1.5">↺ Girar -1.5°</button>
+            <button class="hud-btn tilt-btn" data-rz="1.5">↻ Girar +1.5°</button>
           </div>
 
-          <button id="btn-pos-reset" class="hud-btn reset-btn">ZERAR AJUSTES</button>
+          <button id="btn-pos-reset" class="hud-btn reset-btn">CENTRALIZAR ARTE</button>
         </div>
 
         <div class="dpad-grid">
-          <button class="hud-btn dpad-btn up" data-dx="0" data-dy="0.02">▲</button>
-          <button class="hud-btn dpad-btn left" data-dx="-0.02" data-dy="0">◀</button>
+          <button class="hud-btn dpad-btn up" data-dx="0" data-dy="0.04">▲</button>
+          <button class="hud-btn dpad-btn left" data-dx="-0.04" data-dy="0">◀</button>
           <div class="dpad-center-dot"></div>
-          <button class="hud-btn dpad-btn right" data-dx="0.02" data-dy="0">▶</button>
-          <button class="hud-btn dpad-btn down" data-dx="0" data-dy="-0.02">▼</button>
+          <button class="hud-btn dpad-btn right" data-dx="0.04" data-dy="0">▶</button>
+          <button class="hud-btn dpad-btn down" data-dx="0" data-dy="-0.04">▼</button>
         </div>
       </div>
     </header>
 
     <footer class="hud-bottom">
       <div class="quick-actions">
-        <button id="btn-place-wall" class="hud-btn place-btn">
-          📌 COLAR ARTE NA MIRA
+        <button id="btn-freeze-screen" class="hud-btn freeze-btn">
+          ❄️ CONGELAR NA TELA (TRIPÉ)
         </button>
         <button id="btn-peek" class="hud-btn peek-btn">
           SEGURE P/ OCULTAR (PEEK)
@@ -104,6 +104,6 @@
     </footer>
   </div>
 
-  <script type="module" src="app.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>
