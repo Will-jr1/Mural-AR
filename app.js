@@ -1,23 +1,14 @@
-const STORAGE_KEY = 'webar_mural_pro_3d_v1';
+import * as THREE from 'three';
 
 document.addEventListener('DOMContentLoaded', () => {
-  const sceneEl = document.getElementById('main-scene');
-  const videoEl = document.getElementById('camera-feed');
-  const arCamera = document.getElementById('ar-camera');
-  const wallAnchor = document.getElementById('wall-anchor');
-  const muralRig = document.getElementById('mural-rig');
-  const perspectiveGrid = document.getElementById('perspective-grid');
+  const container = document.getElementById('webgl-container');
+  const hudContainer = document.getElementById('hud-container');
 
-  const layerIds = ['layer-wireframe', 'layer-fill', 'layer-details'];
-  const layerElements = {};
-  layerIds.forEach((id) => {
-    layerElements[id] = document.getElementById(id);
-  });
-
-  const hardLockBtn = document.getElementById('btn-hard-lock');
-  const recenterWallBtn = document.getElementById('btn-recenter-wall');
-  const startWebXRBtn = document.getElementById('btn-start-webxr');
-  const toggleGridBtn = document.getElementById('btn-toggle-grid');
+  // Elementos do HUD
+  const trackingBadge = document.getElementById('tracking-badge');
+  const trackingText = document.getElementById('tracking-text');
+  const startXRBtn = document.getElementById('btn-start-xr');
+  const placeWallBtn = document.getElementById('btn-place-wall');
   const opacitySlider = document.getElementById('opacity-slider');
   const opacityValue = document.getElementById('opacity-value');
   const peekBtn = document.getElementById('btn-peek');
@@ -33,15 +24,14 @@ document.addEventListener('DOMContentLoaded', () => {
   const dpadButtons = document.querySelectorAll('.dpad-btn');
   const tiltButtons = document.querySelectorAll('.tilt-btn');
 
+  // Estado da Aplicação
   const state = {
     globalOpacity: 0.85,
     isPeeking: false,
-    isHardLocked: false, // Quando true, mata 100% do drift do giroscópio!
-    showGrid: true,
+    isWallAnchored: false,
     scale: 1.0,
-    baseScale: 1.5,
-    pos: { x: 0, y: 0, z: 0 },
-    rot: { x: 0, y: 0, z: 0 },
+    offsetPos: { x: 0, y: 0, z: 0 },
+    offsetRot: { x: 0, y: 0, z: 0 },
     layers: {
       'layer-wireframe': true,
       'layer-fill': true,
@@ -49,160 +39,207 @@ document.addEventListener('DOMContentLoaded', () => {
     },
   };
 
-  // 1. Inicia câmera traseira com foco e resolução travados
-  async function startCamera() {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
-        audio: false,
-      });
-      videoEl.srcObject = stream;
-    } catch (e) {
-      console.error('Erro ao abrir câmera:', e);
-    }
-  }
+  // 1. Inicialização do Motor Three.js + WebXR 6DoF
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 30);
 
-  function saveState() {
-    try {
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({ pos: state.pos, rot: state.rot, scale: state.scale })
-      );
-    } catch (e) {}
-  }
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.xr.enabled = true;
+  container.appendChild(renderer.domElement);
 
-  function loadState() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return;
-      const p = JSON.parse(raw);
-      if (p.pos) state.pos = p.pos;
-      if (p.rot) state.rot = p.rot;
-      if (p.scale) state.scale = p.scale;
-    } catch (e) {}
-  }
+  // 2. Mira Laser 3D (Reticle) que desliza na parede física durante o escaneamento
+  const reticle = new THREE.Mesh(
+    new THREE.RingGeometry(0.06, 0.08, 32),
+    new THREE.MeshBasicMaterial({ color: 0x00ff66, side: THREE.DoubleSide })
+  );
+  reticle.matrixAutoUpdate = false;
+  reticle.visible = false;
+  scene.add(reticle);
 
-  function applyTransform3D() {
-    if (!muralRig || !muralRig.object3D) return;
-    muralRig.setAttribute('position', `${state.pos.x} ${state.pos.y} ${state.pos.z}`);
-    muralRig.setAttribute('rotation', `${state.rot.x} ${state.rot.y} ${state.rot.z}`);
+  // 3. Grupo Âncora da Parede (Cravado no mundo físico em metros reais)
+  const wallAnchorGroup = new THREE.Group();
+  wallAnchorGroup.position.set(0, 0, -1.5); // Posição inicial de preview a 1.5m
+  scene.add(wallAnchorGroup);
 
-    const s = +(state.baseScale * state.scale).toFixed(3);
-    muralRig.setAttribute('scale', `${s} ${s} 1`);
+  // Sub-grupo para ajustes finos de D-Pad, Escala e Rotação sem perder a âncora física
+  const muralRigGroup = new THREE.Group();
+  wallAnchorGroup.add(muralRigGroup);
 
-    scaleDisplay.textContent = `${Math.round(state.scale * 100)}%`;
-    coordsDisplay.textContent = `Y:${state.rot.y}° | X:${state.rot.x}° | Z:${state.rot.z}°`;
-  }
+  // Carregamento das 3 Camadas PNG em Alta Resolução
+  const textureLoader = new THREE.TextureLoader();
+  const layerMeshes = {};
+  const planeGeo = new THREE.PlaneGeometry(1.2, 0.75); // 1.20m x 0.75m reais na parede (16:10)
 
-  function syncLayers3D() {
+  const layerConfigs = [
+    { id: 'layer-wireframe', url: './assets/layer-wireframe.png', z: 0.002 },
+    { id: 'layer-fill', url: './assets/layer-fill.png', z: 0.004 },
+    { id: 'layer-details', url: './assets/layer-details.png', z: 0.006 },
+  ];
+
+  layerConfigs.forEach((cfg) => {
+    const tex = textureLoader.load(cfg.url);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    const mat = new THREE.MeshBasicMaterial({
+      map: tex,
+      transparent: true,
+      opacity: state.globalOpacity,
+      alphaTest: 0.01,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const mesh = new THREE.Mesh(planeGeo, mat);
+    mesh.position.z = cfg.z;
+    muralRigGroup.add(mesh);
+    layerMeshes[cfg.id] = mesh;
+  });
+
+  // Grade auxiliar discreta nas bordas do mural
+  const borderEdges = new THREE.EdgesGeometry(planeGeo);
+  const borderLine = new THREE.LineSegments(
+    borderEdges,
+    new THREE.LineBasicMaterial({ color: 0x00ff66, transparent: true, opacity: 0.5 })
+  );
+  muralRigGroup.add(borderLine);
+
+  // 4. Sincronização de Opacidade, Camadas e Transformações Locais
+  function syncLayersVisuals() {
     const effectiveOpacity = state.isPeeking ? 0 : state.globalOpacity;
-    layerIds.forEach((id) => {
-      const el = layerElements[id];
-      if (!el || !el.object3D) return;
-      const active = state.layers[id];
-      const targetOpacity = active ? effectiveOpacity : 0;
-
-      el.object3D.visible = targetOpacity > 0.001;
-      const mesh = el.getObject3D('mesh');
-      if (mesh && mesh.material) {
-        mesh.material.transparent = true;
-        mesh.material.opacity = targetOpacity;
-        mesh.material.needsUpdate = true;
-      }
+    Object.keys(layerMeshes).forEach((id) => {
+      const mesh = layerMeshes[id];
+      const isActive = state.layers[id];
+      const targetOp = isActive ? effectiveOpacity : 0;
+      mesh.visible = targetOp > 0.001;
+      mesh.material.opacity = targetOp;
     });
+    borderLine.visible = !state.isPeeking;
+  }
 
-    if (perspectiveGrid && perspectiveGrid.object3D) {
-      perspectiveGrid.object3D.visible = state.showGrid && !state.isPeeking;
+  function applyLocalOffsets() {
+    muralRigGroup.position.set(state.offsetPos.x, state.offsetPos.y, state.offsetPos.z);
+    muralRigGroup.rotation.set(
+      THREE.MathUtils.degToRad(state.offsetRot.x),
+      THREE.MathUtils.degToRad(state.offsetRot.y),
+      THREE.MathUtils.degToRad(state.offsetRot.z)
+    );
+    muralRigGroup.scale.set(state.scale, state.scale, 1);
+    scaleDisplay.textContent = `${Math.round(state.scale * 100)}%`;
+  }
+
+  // 5. Sessão WebXR 6DoF (SLAM com Hit-Test Real)
+  let hitTestSource = null;
+  let hitTestSourceRequested = false;
+
+  async function startWebXRSession() {
+    if (!navigator.xr) {
+      alert('Seu navegador atual bloqueia a API WebXR 6DoF. No Android, use o Google Chrome. No iPhone, abra este link pelo app gratuito "WebXR Viewer".');
+      return;
+    }
+
+    try {
+      const session = await navigator.xr.requestSession('immersive-ar', {
+        requiredFeatures: ['hit-test'],
+        optionalFeatures: ['dom-overlay', 'local-floor'],
+        domOverlay: { root: hudContainer },
+      });
+
+      renderer.xr.setReferenceSpaceType('local');
+      await renderer.xr.setSession(session);
+
+      startXRBtn.style.display = 'none';
+      trackingText.textContent = 'Aponte para a parede p/ escanear...';
+
+      session.addEventListener('end', () => {
+        hitTestSourceRequested = false;
+        hitTestSource = null;
+        startXRBtn.style.display = 'block';
+      });
+    } catch (err) {
+      console.error('Erro ao iniciar WebXR:', err);
+      alert('Não foi possível ativar o rastreamento 6DoF neste navegador: ' + err.message);
     }
   }
 
-  // 2. Centraliza a âncora na frente da câmera atual
-  function pullWallAnchorToFront() {
-    const camObj = arCamera.object3D;
-    const distance = 2.2;
-    const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(camObj.quaternion);
-    const targetPos = new THREE.Vector3().copy(camObj.position).add(dir.multiplyScalar(distance));
+  startXRBtn.addEventListener('click', startWebXRSession);
 
-    wallAnchor.object3D.position.copy(targetPos);
-    wallAnchor.object3D.lookAt(camObj.position);
-  }
+  // 6. Botão "COLAR ARTE NA MIRA": Trava o plano nas coordenadas físicas da parede!
+  placeWallBtn.addEventListener('click', () => {
+    if (reticle.visible) {
+      // Copia a posição exata que o laser encontrou na parede
+      const hitPos = new THREE.Vector3();
+      const hitQuat = new THREE.Quaternion();
+      const hitScale = new THREE.Vector3();
+      reticle.matrix.decompose(hitPos, hitQuat, hitScale);
 
-  recenterWallBtn.addEventListener('click', async () => {
-    if (
-      typeof DeviceOrientationEvent !== 'undefined' &&
-      typeof DeviceOrientationEvent.requestPermission === 'function'
-    ) {
-      try {
-        await DeviceOrientationEvent.requestPermission();
-      } catch (e) {}
-    }
-    pullWallAnchorToFront();
-  });
+      wallAnchorGroup.position.copy(hitPos);
 
-  // 3. BOTÃO HARD LOCK (Trava Absoluta na Tela — Zero Esbarrão / Zero Drift do Giroscópio)
-  hardLockBtn.addEventListener('click', () => {
-    state.isHardLocked = !state.isHardLocked;
+      // Garante que o mural fique em pé (vertical) alinhado com a parede e olhando para o artista
+      const camPos = new THREE.Vector3();
+      camera.getWorldPosition(camPos);
+      const lookTarget = new THREE.Vector3(camPos.x, hitPos.y, camPos.z);
+      wallAnchorGroup.lookAt(lookTarget);
 
-    if (state.isHardLocked) {
-      // Desliga a leitura do giroscópio para congelar a matriz 3D exatamente como está na tela!
-      arCamera.setAttribute('look-controls', 'magicWindowTrackingEnabled', false);
-      hardLockBtn.classList.add('locked');
-      hardLockBtn.textContent = '🔒 FIXADO 100% (ZERO DRIFT) — TOQUE P/ SOLTAR';
+      state.isWallAnchored = true;
+      placeWallBtn.classList.add('anchored');
+      placeWallBtn.textContent = '📌 REPOSICIONAR NA MIRA';
+
+      trackingBadge.classList.remove('status-searching');
+      trackingBadge.classList.add('status-locked');
+      trackingText.textContent = '6DoF Cravado na Parede!';
     } else {
-      // Religa o giroscópio e puxa a arte para a visão atual
-      arCamera.setAttribute('look-controls', 'magicWindowTrackingEnabled', true);
-      setTimeout(pullWallAnchorToFront, 60);
-      hardLockBtn.classList.remove('locked');
-      hardLockBtn.textContent = '🔓 GIROSCÓPIO LIVRE (TOQUE P/ TRAVAR FIXO)';
+      // Se clicou fora do WebXR (modo preview), trava a 1.2m na frente da câmera atual
+      const camPos = new THREE.Vector3();
+      const camDir = new THREE.Vector3(0, 0, -1);
+      camera.getWorldPosition(camPos);
+      camDir.applyQuaternion(camera.quaternion);
+      wallAnchorGroup.position.copy(camPos).add(camDir.multiplyScalar(1.2));
+      wallAnchorGroup.lookAt(camPos);
     }
   });
 
-  // 4. Arrastar com 1 dedo direto na tela para mover o mural 3D (quando destravado)
-  let isDragging = false;
-  let lastX = 0;
-  let lastY = 0;
+  // 7. Loop de Renderização a 60fps (Atualiza o Hit-Test e mede a distância real em metros!)
+  renderer.setAnimationLoop((timestamp, frame) => {
+    if (frame) {
+      const referenceSpace = renderer.xr.getReferenceSpace();
+      const session = renderer.xr.getSession();
 
-  window.addEventListener('pointerdown', (e) => {
-    // Ignora se clicou nos botões do HUD
-    if (e.target.closest('.hud-top') || e.target.closest('.hud-bottom')) return;
-    if (state.isHardLocked) return;
-    isDragging = true;
-    lastX = e.clientX;
-    lastY = e.clientY;
-  });
-
-  window.addEventListener('pointermove', (e) => {
-    if (!isDragging || state.isHardLocked) return;
-    const dx = (e.clientX - lastX) * 0.0035;
-    const dy = (lastY - e.clientY) * 0.0035;
-    lastX = e.clientX;
-    lastY = e.clientY;
-
-    state.pos.x = +(state.pos.x + dx).toFixed(3);
-    state.pos.y = +(state.pos.y + dy).toFixed(3);
-    applyTransform3D();
-  });
-
-  window.addEventListener('pointerup', () => {
-    if (isDragging) {
-      isDragging = false;
-      saveState();
-    }
-  });
-
-  // 5. Verifica se o celular suporta WebXR Nativo 6DoF (ARCore no Android Chrome)
-  if (navigator.xr && navigator.xr.isSessionSupported) {
-    navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
-      if (supported) {
-        startWebXRBtn.style.display = 'block';
-        startWebXRBtn.addEventListener('click', () => {
-          sceneEl.enterAR();
+      if (!hitTestSourceRequested) {
+        session.requestReferenceSpace('viewer').then((viewerSpace) => {
+          session.requestHitTestSource({ space: viewerSpace }).then((source) => {
+            hitTestSource = source;
+          });
         });
+        hitTestSourceRequested = true;
       }
-    });
-  }
 
-  // 6. Controles de Perspectiva 3D (Tilt X, Y, Z) e D-Pad
+      if (hitTestSource) {
+        const hitTestResults = frame.getHitTestResults(hitTestSource);
+        if (hitTestResults.length > 0) {
+          const hit = hitTestResults[0];
+          const pose = hit.getPose(referenceSpace);
+          reticle.visible = true;
+          reticle.matrix.fromArray(pose.transform.matrix);
+
+          if (!state.isWallAnchored) {
+            trackingText.textContent = 'Parede lida! Toque em COLAR ARTE';
+          }
+        } else {
+          reticle.visible = false;
+        }
+      }
+
+      // Calcula a distância física real (em metros) entre o celular e a parede!
+      const camWorldPos = new THREE.Vector3();
+      camera.getWorldPosition(camWorldPos);
+      const distMeters = camWorldPos.distanceTo(wallAnchorGroup.position);
+      coordsDisplay.textContent = `Distância Real: ${distMeters.toFixed(2)}m | Rot Y:${state.offsetRot.y}°`;
+    }
+
+    renderer.render(scene, camera);
+  });
+
+  // 8. Controles do HUD (D-Pad, Tilt, Escala, Opacidade e Peek)
   toggleDpadBtn.addEventListener('click', () => {
     const isHidden = dpadPanel.classList.toggle('hidden');
     toggleDpadBtn.classList.toggle('active', !isHidden);
@@ -212,10 +249,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const dx = parseFloat(btn.getAttribute('data-dx')) || 0;
     const dy = parseFloat(btn.getAttribute('data-dy')) || 0;
     btn.addEventListener('click', () => {
-      state.pos.x = +(state.pos.x + dx).toFixed(3);
-      state.pos.y = +(state.pos.y + dy).toFixed(3);
-      applyTransform3D();
-      saveState();
+      state.offsetPos.x = +(state.offsetPos.x + dx).toFixed(3);
+      state.offsetPos.y = +(state.offsetPos.y + dy).toFixed(3);
+      applyLocalOffsets();
     });
   });
 
@@ -224,78 +260,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const ry = parseFloat(btn.getAttribute('data-ry')) || 0;
     const rz = parseFloat(btn.getAttribute('data-rz')) || 0;
     btn.addEventListener('click', () => {
-      state.rot.x = +(state.rot.x + rx).toFixed(1);
-      state.rot.y = +(state.rot.y + ry).toFixed(1);
-      state.rot.z = +(state.rot.z + rz).toFixed(1);
-      applyTransform3D();
-      saveState();
+      state.offsetRot.x += rx;
+      state.offsetRot.y += ry;
+      state.offsetRot.z += rz;
+      applyLocalOffsets();
     });
   });
 
-  resetPosBtn.addEventListener('click', () => {
-    state.pos = { x: 0, y: 0, z: 0 };
-    state.rot = { x: 0, y: 0, z: 0 };
-    state.scale = 1.0;
-    localStorage.removeItem(STORAGE_KEY);
-    applyTransform3D();
-  });
-
-  // 7. Grid, Camadas, Opacidade, Peek e Escala
-  toggleGridBtn.addEventListener('click', () => {
-    state.showGrid = !state.showGrid;
-    toggleGridBtn.classList.toggle('active', state.showGrid);
-    toggleGridBtn.textContent = state.showGrid ? 'GRID 3D: ON' : 'GRID 3D: OFF';
-    syncLayers3D();
-  });
-
-  layerButtons.forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const id = btn.getAttribute('data-layer');
-      state.layers[id] = !state.layers[id];
-      btn.classList.toggle('active', state.layers[id]);
-      syncLayers3D();
-    });
-  });
-
-  opacitySlider.addEventListener('input', (e) => {
-    const val = parseInt(e.target.value, 10);
-    state.globalOpacity = val / 100;
-    opacityValue.textContent = `${val}%`;
-    syncLayers3D();
-  });
-
-  const startPeek = (e) => {
-    e.preventDefault();
-    state.isPeeking = true;
-    peekBtn.classList.add('peeking');
-    syncLayers3D();
-  };
-  const endPeek = () => {
-    if (!state.isPeeking) return;
-    state.isPeeking = false;
-    peekBtn.classList.remove('peeking');
-    syncLayers3D();
-  };
-  peekBtn.addEventListener('pointerdown', startPeek);
-  window.addEventListener('pointerup', endPeek);
-  window.addEventListener('pointercancel', endPeek);
-
-  scaleUpBtn.addEventListener('click', () => {
-    state.scale = Math.min(4.0, +(state.scale + 0.08).toFixed(2));
-    applyTransform3D();
-    saveState();
-  });
-  scaleDownBtn.addEventListener('click', () => {
-    state.scale = Math.max(0.2, +(state.scale - 0.08).toFixed(2));
-    applyTransform3D();
-    saveState();
-  });
-
-  muralRig.addEventListener('loaded', () => {
-    loadState();
-    applyTransform3D();
-    syncLayers3D();
-  });
-
-  startCamera();
-});
+  resetPosBtn.add

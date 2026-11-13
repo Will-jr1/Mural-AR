@@ -3,101 +3,34 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-  <title>WebAR Mural Pro — 6DoF & Hard Lock</title>
-
-  <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+  <title>WebAR Mural 6DoF — Three.js + WebXR</title>
   <link rel="stylesheet" href="style.css" />
+
+  <!-- Import Map oficial do Three.js r160 -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
+      }
+    }
+  </script>
 </head>
 <body>
 
-  <!-- 1. CÂMERA DE FUNDO (Usada no modo Giroscópio / Hard Lock) -->
-  <video id="camera-feed" autoplay playsinline muted></video>
+  <!-- Container onde o Three.js/WebXR vai injetar o Canvas 3D -->
+  <div id="webgl-container"></div>
 
-  <!-- 2. CENA 3D A-FRAME + SUPORTE WEBXR (SLAM 6DoF) -->
-  <a-scene
-    id="main-scene"
-    embedded
-    vr-mode-ui="enabled: false"
-    device-orientation-permission-ui="enabled: false"
-    renderer="alpha: true; antialias: true; colorManagement: true; precision: highp;"
-    webxr="requiredFeatures: hit-test,local-floor; optionalFeatures: dom-overlay; overlayElement: #hud-container;"
-  >
-    <a-assets timeout="10000">
-      <img id="tex-wireframe" src="./assets/layer-wireframe.png" crossorigin="anonymous" />
-      <img id="tex-fill" src="./assets/layer-fill.png" crossorigin="anonymous" />
-      <img id="tex-details" src="./assets/layer-details.png" crossorigin="anonymous" />
-    </a-assets>
-
-    <!-- Câmera 3D -->
-    <a-entity id="camera-rig" position="0 0 0">
-      <a-camera
-        id="ar-camera"
-        position="0 0 0"
-        look-controls="magicWindowTrackingEnabled: true; touchEnabled: false; mouseEnabled: false"
-      ></a-camera>
-    </a-entity>
-
-    <!-- Mira laser no chão/parede quando no Modo WebXR 6DoF -->
-    <a-entity id="xr-reticle" visible="false">
-      <a-ring color="#00ff66" radius-inner="0.08" radius-outer="0.11" rotation="-90 0 0"></a-ring>
-      <a-circle color="#00ff66" radius="0.02" rotation="-90 0 0"></a-circle>
-    </a-entity>
-
-    <!-- ÂNCORA 3D DA PAREDE -->
-    <a-entity id="wall-anchor" position="0 0 -2.2" rotation="0 0 0">
-      <a-entity id="mural-rig" position="0 0 0" rotation="0 0 0" scale="1.5 1.5 1">
-
-        <!-- Grade de Perspectiva 3D -->
-        <a-plane
-          id="perspective-grid"
-          position="0 0 0"
-          width="1.65"
-          height="1.05"
-          material="color: #00ff66; wireframe: true; segmentsWidth: 10; segmentsHeight: 6; opacity: 0.4; transparent: true"
-        ></a-plane>
-
-        <!-- Layer 1: Esqueleto -->
-        <a-plane
-          id="layer-wireframe"
-          position="0 0 0.002"
-          width="1.6"
-          height="1.0"
-          material="src: #tex-wireframe; transparent: true; opacity: 0.85; alphaTest: 0.01; shader: flat; side: double; depthWrite: false"
-        ></a-plane>
-
-        <!-- Layer 2: Preenchimento -->
-        <a-plane
-          id="layer-fill"
-          position="0 0 0.004"
-          width="1.6"
-          height="1.0"
-          material="src: #tex-fill; transparent: true; opacity: 0.85; alphaTest: 0.01; shader: flat; side: double; depthWrite: false"
-        ></a-plane>
-
-        <!-- Layer 3: Detalhes -->
-        <a-plane
-          id="layer-details"
-          position="0 0 0.006"
-          width="1.6"
-          height="1.0"
-          material="src: #tex-details; transparent: true; opacity: 0.85; alphaTest: 0.01; shader: flat; side: double; depthWrite: false"
-        ></a-plane>
-
-      </a-entity>
-    </a-entity>
-  </a-scene>
-
-  <!-- 3. HUD DE CONTROLE -->
+  <!-- HUD que flutua por cima da sessão WebXR (via dom-overlay) -->
   <div id="hud-container">
     <header class="hud-top">
       <div class="top-bar-row">
-        <!-- Botão de Trava Absoluta (Mata 100% do Drift do Giroscópio) -->
-        <button id="btn-hard-lock" class="hud-btn lock-screen-btn">
-          🔓 GIROSCÓPIO LIVRE (TOQUE P/ TRAVAR FIXO)
-        </button>
+        <div id="tracking-badge" class="status-badge status-searching">
+          <span class="status-dot"></span>
+          <span id="tracking-text">Aguardando Sensor 6DoF...</span>
+        </div>
 
         <div class="top-right-tools">
-          <button id="btn-toggle-dpad" class="hud-btn tool-toggle-btn">3D / TILT</button>
+          <button id="btn-toggle-dpad" class="hud-btn tool-toggle-btn">AJUSTE FINO</button>
           <div class="scale-controls">
             <button id="btn-scale-down" class="hud-btn icon-btn">−</button>
             <span id="scale-display" class="scale-readout">100%</span>
@@ -106,48 +39,43 @@
         </div>
       </div>
 
-      <!-- Barra Secundária: WebXR 6DoF (SLAM Real) + Recentralizar -->
-      <div class="sub-bar-row">
-        <button id="btn-recenter-wall" class="hud-btn sub-btn">
-          🎯 Puxar Arte p/ Minha Frente
-        </button>
-        <button id="btn-start-webxr" class="hud-btn xr-btn" style="display: none;">
-          🚀 ATIVAR AR LASER (6DoF)
-        </button>
-      </div>
+      <!-- Botão Principal para Iniciar o Sensor 6DoF Real (SLAM) -->
+      <button id="btn-start-xr" class="hud-btn start-xr-btn">
+        🚀 INICIAR RASTREAMENTO 6DoF (PAREDE REAL)
+      </button>
 
-      <!-- Gaveta de Perspectiva 3D (Inclinacão da Parede + Posição) -->
+      <!-- Gaveta de Ajuste Fino (Offset Local + Inclinação da Parede) -->
       <div id="dpad-panel" class="dpad-drawer hidden">
         <div class="dpad-info">
-          <span class="dpad-title">PERSPECTIVA 3D DA PAREDE</span>
-          <code id="coords-display" class="coords-readout">Y: 0° | X: 0° | Z: 0°</code>
+          <span class="dpad-title">AJUSTE FINO NA PAREDE</span>
+          <code id="coords-display" class="coords-readout">Dist Z: 0.00m | Rot: 0°</code>
           
           <div class="tilt-controls">
-            <button class="hud-btn tilt-btn" data-ry="-3">◀ Perspectiva Esq</button>
-            <button class="hud-btn tilt-btn" data-ry="3">Perspectiva Dir ▶</button>
-            <button class="hud-btn tilt-btn" data-rx="-3">▲ Inclinar Cima</button>
-            <button class="hud-btn tilt-btn" data-rx="3">▼ Inclinar Baixo</button>
-            <button class="hud-btn tilt-btn" data-rz="-1.5">↺ Girar -1.5°</button>
-            <button class="hud-btn tilt-btn" data-rz="1.5">↻ Girar +1.5°</button>
+            <button class="hud-btn tilt-btn" data-ry="-2">◀ Virar Esq</button>
+            <button class="hud-btn tilt-btn" data-ry="2">Virar Dir ▶</button>
+            <button class="hud-btn tilt-btn" data-rx="-2">▲ Inclinar Cima</button>
+            <button class="hud-btn tilt-btn" data-rx="2">▼ Inclinar Baixo</button>
+            <button class="hud-btn tilt-btn" data-rz="-1">↺ Girar -1°</button>
+            <button class="hud-btn tilt-btn" data-rz="1">↻ Girar +1°</button>
           </div>
 
-          <button id="btn-pos-reset" class="hud-btn reset-btn">ZERAR PERSPECTIVA</button>
+          <button id="btn-pos-reset" class="hud-btn reset-btn">ZERAR AJUSTES</button>
         </div>
 
         <div class="dpad-grid">
-          <button class="hud-btn dpad-btn up" data-dx="0" data-dy="0.04">▲</button>
-          <button class="hud-btn dpad-btn left" data-dx="-0.04" data-dy="0">◀</button>
+          <button class="hud-btn dpad-btn up" data-dx="0" data-dy="0.02">▲</button>
+          <button class="hud-btn dpad-btn left" data-dx="-0.02" data-dy="0">◀</button>
           <div class="dpad-center-dot"></div>
-          <button class="hud-btn dpad-btn right" data-dx="0.04" data-dy="0">▶</button>
-          <button class="hud-btn dpad-btn down" data-dx="0" data-dy="-0.04">▼</button>
+          <button class="hud-btn dpad-btn right" data-dx="0.02" data-dy="0">▶</button>
+          <button class="hud-btn dpad-btn down" data-dx="0" data-dy="-0.02">▼</button>
         </div>
       </div>
     </header>
 
     <footer class="hud-bottom">
       <div class="quick-actions">
-        <button id="btn-toggle-grid" class="hud-btn grid-btn active">
-          GRID 3D: ON
+        <button id="btn-place-wall" class="hud-btn place-btn">
+          📌 COLAR ARTE NA MIRA
         </button>
         <button id="btn-peek" class="hud-btn peek-btn">
           SEGURE P/ OCULTAR (PEEK)
